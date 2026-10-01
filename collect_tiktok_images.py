@@ -215,18 +215,23 @@ async def browser_image_candidates(page, min_width: int, min_height: int):
           el.closest('[class]')?.getAttribute('class') || '',
           el.closest('[data-e2e]')?.getAttribute('data-e2e') || ''
         ].join(' ').toLowerCase();
-        return /avatar|profile|emoji|icon|logo|comment|creator|suggest|recommend|ad-card|ads|banner/.test(txt);
+        if (/avatar|profile|emoji|icon|logo|comment|creator|suggest|recommend|ad-card|ads|banner/.test(txt)) return true;
+        // Any ancestor that is a recommendation / related / ad block (sidebar
+        // thumbnails of other videos are large images too).
+        return !!el.closest(
+          '[data-e2e*="recommend"], [data-e2e*="related"], [data-e2e*="suggest"], ' +
+          '[class*="Recommend"], [class*="recommend"], [class*="Related"], [class*="related"], ' +
+          '[class*="Sidebar"], [class*="sidebar"], [class*="AdCard"], [class*="Ads"], [class*="Comment"]'
+        );
       };
 
+      // Only the post's own slide container (swiper / photo detail), not the
+      // whole <main> — that would include recommendation thumbnails.
       const inPostArea = (el) => !!(
-        el.closest('#main-content-video_detail') ||
-        el.closest('[data-e2e="browse-photo"]') ||
-        el.closest('[data-e2e*="photo"]') ||
-        el.closest('[class*="Photo"]') ||
-        el.closest('[class*="photo"]') ||
-        el.closest('[class*="carousel"]') ||
-        el.closest('[class*="Carousel"]') ||
-        el.closest('main')
+        el.closest('[class*="Swiper"], [class*="swiper"], [class*="ImageSlide"], [class*="imageSlide"], ' +
+                   '[class*="PhotoDetail"], [class*="photoDetail"], [class*="PhotoVideo"], ' +
+                   '[data-e2e="browse-photo"], [data-e2e*="photo"], [class*="carousel"], [class*="Carousel"]') ||
+        (el.closest('#main-content-video_detail') && !el.closest('[class*="DivRightContainer"], [class*="RightPanel"]'))
       );
 
       const add = (src, el, source) => {
@@ -401,7 +406,18 @@ async def collect_one(api, url: str, args):
             prev_urls = {c.get("url") for c in dom}
             stale_steps = 0
             for step in range(60):
-                await page.keyboard.press("ArrowRight")
+                advanced = await page.evaluate(
+                    r"""(() => {
+                      const sel = '[data-e2e="arrow-right"], [data-e2e*="next"], button[class*="ArrowRight"], ' +
+                                  '[class*="swiper-button-next"], [class*="ButtonNext"], [class*="arrow-right"], ' +
+                                  'button[aria-label*="next" i], button[aria-label*="след" i]';
+                      const b = Array.from(document.querySelectorAll(sel)).find(e => e.getBoundingClientRect().width > 0);
+                      if (b) { b.click(); return 'button'; }
+                      return null;
+                    })()"""
+                )
+                if not advanced:
+                    await page.keyboard.press("ArrowRight")
                 await asyncio.sleep(1.2)
                 more = await browser_image_candidates(page, args.min_width, args.min_height)
                 new = [c for c in more if c.get("url") not in prev_urls]
@@ -429,7 +445,23 @@ async def collect_one(api, url: str, args):
 
         candidates = sorted(merged.values(), key=candidate_score, reverse=True)
         manifest["candidates_total"] = len(candidates)
-        print("Candidates:", len(candidates))
+        print("Candidates:", len(candidates), "| from DOM:", len(dom), "| from hydration:", len(hyd))
+
+        if not dom:
+            # Debug: every sizeable <img> with its ancestor chain, to tune selectors.
+            try:
+                dbg = await page.evaluate(
+                    r"""(() => Array.from(document.images)
+                        .filter(i => Math.max(i.naturalWidth, i.getBoundingClientRect().width) >= 200)
+                        .slice(0, 60)
+                        .map(i => { let chain = []; let e = i; let n = 0;
+                          while (e && n < 8) { chain.push((e.tagName || '') + (e.getAttribute && e.getAttribute('data-e2e') ? '[' + e.getAttribute('data-e2e') + ']' : '') + '.' + ((e.className || '').toString().slice(0, 50))); e = e.parentElement; n++; }
+                          return {src: i.currentSrc || i.src, w: i.naturalWidth, h: i.naturalHeight, chain}; }))()"""
+                )
+                json_dump(post_root / "debug_images_dom.json", dbg)
+                print("No DOM slide images matched; debug saved to", post_root / "debug_images_dom.json")
+            except Exception as exc:
+                print("DOM debug failed:", type(exc).__name__, exc)
 
         seen_hashes = set()
         saved = []
