@@ -3,6 +3,11 @@
 pandas
 openpyxl
 requests
-# OCR (отдельное окружение, см. TIKTOK_IMAGES_OCR_README.txt):
+# расшифровка речи в видео (transcribe_whisper.py, по коду Маши)
+faster-whisper
+av
+numpy
+yt-dlp
+# OCR локальный (отдельное окружение, см. TIKTOK_IMAGES_OCR_README.txt):
 # paddlepaddle==3.2.0  (-i https://www.paddlepaddle.org.cn/packages/stable/cpu/)
 # paddleocr

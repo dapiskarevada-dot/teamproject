@@ -306,6 +306,98 @@ async def collect_slides_and_ocr(api, unique_posts, args):
     print(f"Slides text filled for {filled}/{len(photo)} photo posts")
 
 
+async def collect_videos_and_transcribe(api, unique_posts, args):
+    """
+    For every video post: video.info() (TikTok auto-subtitles when present),
+    save the video with the open PyTok session, then Whisper (faster-whisper)
+    according to --whisper: missing (only posts without TikTok subtitles),
+    all, off. Fills subtitle_*, transcript_* and video_file fields.
+    """
+    videos = [p for p in unique_posts if p.get("post_type_inferred") != "photo"]
+    if not videos or (args.no_videos and args.whisper == "off"):
+        return
+    media_root = args.case_dir.parent / "tiktok_media"
+    from tiktok_fields import download_subtitles, subtitle_langs, unwrap_item
+    print(f"\nVideo posts: {len(videos)} — subtitles + video download (--whisper {args.whisper})")
+    for i, p in enumerate(videos):
+        pid, user = str(p["post_id"]), p["username"]
+        f = p["fields"]
+        post_dir = media_root / "raw" / "posts" / pid
+        have_video = any(post_dir.glob("video.*"))
+        need_video = (not args.no_videos) and (not have_video) and args.whisper != "off"
+        need_subs = not f.get("subtitle_text")
+        if not need_video and not need_subs:
+            continue
+        try:
+            video = api.video(id=pid, username=user)
+            info = await video.info()
+            item = unwrap_item(info)
+            if need_subs:
+                langs = subtitle_langs(item)
+                if langs:
+                    f["subtitle_langs"] = langs
+                    f["subtitle_text"] = await asyncio.to_thread(download_subtitles, item)
+                    if f["subtitle_text"]:
+                        f["transcript_source"] = f.get("transcript_source") or "tiktok"
+            if need_video and (args.whisper == "all" or not f.get("subtitle_text")):
+                data = None
+                try:
+                    data = await asyncio.wait_for(video.bytes(), timeout=180)
+                except Exception as exc:
+                    print(f"  video {pid}: pytok bytes failed: {str(exc)[:120]}")
+                if data and len(data) > 20_000:
+                    post_dir.mkdir(parents=True, exist_ok=True)
+                    (post_dir / "video.mp4").write_bytes(data)
+                    f["video_file"] = str(post_dir / "video.mp4")
+                    print(f"  video {pid}: saved {len(data) // 1024} KB" + (" | subs: tiktok" if f.get("subtitle_text") else ""))
+                else:
+                    try:
+                        from transcribe_whisper import download_ytdlp
+                        path = await asyncio.to_thread(download_ytdlp, p["canonical_url"], post_dir)
+                        if path:
+                            f["video_file"] = str(path); print(f"  video {pid}: saved via yt-dlp")
+                    except Exception as exc:
+                        print(f"  video {pid}: yt-dlp failed: {str(exc)[:120]}")
+        except Exception as exc:
+            print(f"  video {pid}: {type(exc).__name__}: {str(exc)[:160]}")
+        if i < len(videos) - 1 and args.request_delay > 0:
+            await asyncio.sleep(args.request_delay)
+        if args.whisper == "off":
+            continue
+
+    if args.whisper == "off":
+        return
+    try:
+        import transcribe_whisper as tw
+    except Exception as exc:
+        print("Whisper skipped: faster-whisper not installed:", exc)
+        return
+    targets = {str(p["post_id"]) for p in videos if args.whisper == "all" or not p["fields"].get("subtitle_text")}
+    if not targets:
+        return
+    print(f"\nWhisper ({args.whisper_model}) for {len(targets)} videos")
+    try:
+        res = tw.transcribe_dir(media_root, post_ids=targets, model_name=args.whisper_model)
+    except Exception as exc:
+        print("Whisper failed:", f"{type(exc).__name__}: {exc}")
+        return
+    filled = 0
+    for p in videos:
+        r = res.get(str(p["post_id"]))
+        if not r:
+            continue
+        f = p["fields"]
+        if r.get("text"):
+            f["transcript_whisper"] = r["text"]; f["transcript_source"] = "whisper"; filled += 1
+        elif r.get("source"):
+            f["transcript_source"] = f.get("transcript_source") or r["source"]
+    try:
+        tw.write_table(res, media_root)
+    except Exception:
+        pass
+    print(f"Whisper transcripts filled for {filled}/{len(targets)} videos")
+
+
 def gather_queries(args):
     queries = []
 
@@ -580,6 +672,8 @@ async def main_async(args):
         await enrich_posts_table(api, unique_posts, args)
         # Carousels: download slides + transcribe them, fill slides_* columns.
         await collect_slides_and_ocr(api, unique_posts, args)
+        # Videos: TikTok subtitles + video download + Whisper, fill transcript_* columns.
+        await collect_videos_and_transcribe(api, unique_posts, args)
         table_paths = rows_to_table(
             [p["fields"] for p in unique_posts],
             search_dir / f"search_posts_{run_id}",
@@ -736,6 +830,22 @@ def main():
         "--ocr-model",
         default="google/gemini-2.5-flash",
         help="Vision model for slide transcription (OpenRouter id).",
+    )
+    parser.add_argument(
+        "--no-videos",
+        action="store_true",
+        help="Do not download videos (then Whisper runs only on videos already on disk).",
+    )
+    parser.add_argument(
+        "--whisper",
+        choices=["missing", "all", "off"],
+        default="missing",
+        help="Speech transcription: missing = only posts without TikTok subtitles (default), all, off.",
+    )
+    parser.add_argument(
+        "--whisper-model",
+        default="large-v3-turbo",
+        help="faster-whisper model (large-v3-turbo, large-v3, medium, small).",
     )
     parser.add_argument(
         "--subtitles",

@@ -47,6 +47,10 @@ COLUMNS = {
     "music_title": "Звук",
     "subtitle_langs": "Языки субтитров",
     "subtitle_text": "Субтитры",
+    # заполняются конвейером для видео: речь (Whisper) — см. transcribe_whisper.py
+    "transcript_whisper": "Транскрипт (Whisper)",
+    "transcript_source": "Источник транскрипта",
+    "video_file": "Файл видео",
     # заполняются конвейером для фото-постов (каруселей) после расшифровки слайдов
     "slides_count": "Слайдов",
     "slides_text": "Текст со слайдов",
