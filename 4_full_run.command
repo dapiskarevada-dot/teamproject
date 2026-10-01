@@ -7,7 +7,7 @@ source .venv/bin/activate
 rm -rf __pycache__
 LOG="run_$(date +%Y%m%d_%H%M).log"
 echo "=== Запросы:"; cat queries.txt; echo "=== Хэштеги:"; cat hashtags.txt; echo
-python collect_tiktok_search_threads.py --queries-file queries.txt --hashtags-file hashtags.txt --search-count 200 --comments 200 --fetch-author 2>&1 | tee "$LOG"
+python -u collect_tiktok_search_threads.py --queries-file queries.txt --hashtags-file hashtags.txt --search-count 200 --comments 200 --fetch-author 2>&1 | tee "$LOG"
 echo
 echo "=== Готово. Таблицы: cases/tiktok_search_threads/search/search_posts_*.xlsx и comments_*.xlsx"
 read -p "Нажмите Enter, чтобы закрыть"

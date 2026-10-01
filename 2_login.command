@@ -15,7 +15,7 @@ echo "=== Аккаунты в пуле:"
 python -m pytok.accounts.cli list -v
 echo
 echo "=== Проверка без запросов к TikTok:"
-python collect_tiktok_search_threads.py --check
+python -u collect_tiktok_search_threads.py --check
 echo
 echo "=== Готово. Дальше: 3_test.command"
 read -p "Нажмите Enter, чтобы закрыть"
