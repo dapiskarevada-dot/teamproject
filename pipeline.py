@@ -44,7 +44,7 @@ PLAN_FILE = "schools_plan.txt"    # школы + их запросы и хэшт
 MAX_POSTS = 500                   # лимит постов на школу (слайды, видео, Whisper, комментарии); 0 = без лимита
 SEARCH_COUNT = 200                # результатов на запрос/хэштег (потолок TikTok ~200)
 COMMENTS = 200                    # комментариев верхнего уровня на пост (+ все реплаи к ним)
-WHISPER = "missing"               # missing | all | off  (off = расшифровать позже 11_whisper.command)
+WHISPER = "missing"               # missing | all | off  (off = без расшифровки речи; python transcribe_whisper.py — отдельно)
 WHISPER_MODEL = "large-v3-turbo"
 OCR_MODEL = "google/gemini-2.5-flash"
 FETCH_AUTHOR = True               # дозапрашивать профиль автора, если в выдаче нет статистики

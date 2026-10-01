@@ -25,5 +25,5 @@ echo
 echo "=== Проверка без запросов к TikTok:"
 python -u collect_tiktok_search_threads.py --check
 echo
-echo "=== Готово. Дальше: RUN.command (все школы) или RUN.command --test"
+echo "=== Готово. Дальше: НА_НОЧЬ.command или RUN.command"
 read -p "Нажмите Enter, чтобы закрыть"
