@@ -116,9 +116,15 @@ def show_accounts(reset_locks=False):
         from pytok.accounts import AccountsPool
         async def _go():
             pool = AccountsPool()
-            if reset_locks:
-                await pool.reset_locks()          # снять «in use» от прошлых оборванных запусков
-            return await pool.get_active_accounts(), await pool.get_inactive_accounts()
+            active = await pool.get_active_accounts()
+            if reset_locks:                       # снять «in use» и блокировки от прошлых оборванных запусков
+                await pool.reset_locks()
+                for acc in active:
+                    try:
+                        await pool.release_account(acc.username)
+                    except Exception:
+                        pass
+            return active, await pool.get_inactive_accounts()
         active, inactive = asyncio.run(_go())
     except Exception as exc:
         print("Не удалось прочитать пул аккаунтов:", exc)
@@ -269,21 +275,38 @@ def child_args(a, school_name):
 
 
 def run_parallel(a, todo):
-    """До a.parallel школ одновременно; каждая — отдельный процесс и свой аккаунт из пула."""
+    """До a.parallel школ одновременно; каждая — отдельный процесс и свой аккаунт из пула.
+    Если потоку не достался аккаунт (NoAccountError), школа возвращается в очередь и ждёт."""
     running, queue = [], list(todo)
+    retries = {}
     while queue or running:
         while queue and len(running) < a.parallel:
             s = queue.pop(0)
-            log = open(f"pipeline_{slug(s['name'])}.log", "a", encoding="utf-8")
-            print(f"=== старт потока: {s['name']}  (лог pipeline_{slug(s['name'])}.log)", flush=True)
+            logname = f"pipeline_{slug(s['name'])}.log"
+            log = open(logname, "a", encoding="utf-8")
+            print(f"=== старт потока: {s['name']}  (лог {logname})", flush=True)
             p = subprocess.Popen(child_args(a, s["name"]), stdout=log, stderr=subprocess.STDOUT)
-            running.append((s, p, log))
+            running.append((s, p, log, logname))
             time.sleep(25)        # браузеры стартуют не одновременно
         for item in list(running):
-            s, p, log = item
+            s, p, log, logname = item
             if p.poll() is not None:
                 log.close(); running.remove(item)
-                print(f"=== поток завершён: {s['name']} (код {p.returncode})", flush=True)
+                tail = ""
+                try:
+                    tail = Path(logname).read_text(encoding="utf-8", errors="ignore")[-4000:]
+                except Exception:
+                    pass
+                if p.returncode != 0 and "NoAccountError" in tail and retries.get(s["name"], 0) < 20:
+                    retries[s["name"]] = retries.get(s["name"], 0) + 1
+                    print(f"=== {s['name']}: свободного аккаунта нет — вернул в очередь (попытка {retries[s['name']]}), жду 2 мин", flush=True)
+                    queue.append(s)
+                    if a.parallel > 1:
+                        a.parallel -= 1          # аккаунтов меньше, чем думали — сужаем параллель
+                        print(f"=== параллельных потоков теперь {a.parallel}", flush=True)
+                    time.sleep(120)
+                else:
+                    print(f"=== поток завершён: {s['name']} (код {p.returncode})", flush=True)
         time.sleep(5)
 
 

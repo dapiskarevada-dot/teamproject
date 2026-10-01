@@ -34,6 +34,7 @@ if ! python -c "import faster_whisper" 2>/dev/null; then
   echo ">>> Whisper не установлен, ставлю (5–10 минут)..."
   pip install -q faster-whisper av numpy yt-dlp
 fi
+pip install -q -U yt-dlp 2>/dev/null
 [ -f openrouter_key.txt ] || echo "!!! Нет openrouter_key.txt — слайды каруселей не будут расшифрованы (остальное пойдёт)."
 python -u collect_tiktok_search_threads.py --check || { echo "!!! Проверка кода не прошла"; read -p "Enter"; exit 1; }
 echo
