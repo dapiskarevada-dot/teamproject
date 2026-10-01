@@ -14,6 +14,11 @@ IMPORTANT
 - Search results are saved BEFORE comment collection.
 - Posts duplicated across queries are collected only once, while matched
   queries/ranks are preserved in the search manifest.
+- --hashtag TAG adds posts from a hashtag feed to the same pipeline (that is
+  where photo carousels live; search(...).videos() returns videos only).
+- Photo posts: carousel slides are downloaded (collect_tiktok_images) and
+  transcribed by a vision model through the API (ocr_vlm); the text and the
+  schools mentioned on the slides go into the posts table.
 - Besides the JSON layer, a flat table of unique posts is written
   (search_posts_<run>.xlsx / .csv) with author account creation date,
   author stats, post stats, hashtags and (optionally) subtitles.
@@ -211,6 +216,96 @@ def build_search_record(video, query, rank):
     }
 
 
+def gather_hashtags(args):
+    tags = [t.strip().lstrip("#") for t in (args.hashtag or []) if t.strip()]
+    if getattr(args, "hashtags_file", None):
+        with args.hashtags_file.open("r", encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip().lstrip("#")
+                if line and not line.startswith("#"):
+                    tags.append(line)
+    out, seen = [], set()
+    for t in tags:
+        if t.casefold() not in seen:
+            seen.add(t.casefold()); out.append(t)
+    return out
+
+
+async def run_hashtag_feed(api, tag, count):
+    """One hashtag feed, same record shape as search (query = '#tag')."""
+    records, rank = [], 0
+    print("\n" + "=" * 76)
+    print("HASHTAG:", "#" + tag, "| requested:", count)
+    print("=" * 76)
+    async for video in api.hashtag(name=tag).videos(count=count):
+        rank += 1
+        try:
+            record = build_search_record(video, "#" + tag, rank)
+        except Exception as exc:
+            print(f"hashtag item {rank}: skipped — {type(exc).__name__}: {exc}")
+            continue
+        records.append(record)
+        print(f"{rank:>3}. {record['post_type_inferred']:<5} {record['post_id']} @{record['username']}")
+        if len(records) >= count:
+            break
+    print("Received usable hashtag items:", len(records))
+    return records
+
+
+async def collect_slides_and_ocr(api, unique_posts, args):
+    """
+    For every photo post: download carousel slides with the open PyTok session,
+    then transcribe them through the vision API and fill the slides_* fields.
+    """
+    photo = [p for p in unique_posts if p.get("post_type_inferred") == "photo"]
+    if not photo:
+        print("Photo posts: none — slides/OCR step skipped")
+        return
+    media_root = args.case_dir.parent / "tiktok_media"
+    if not args.no_images:
+        import collect_tiktok_images as images
+        img_args = argparse.Namespace(out_dir=media_root, page_wait=6.0, min_width=300, min_height=300,
+                                      max_images=40, request_delay=args.request_delay, between_posts=args.between_posts_delay)
+        print(f"\nPhoto posts: {len(photo)} — downloading carousel slides")
+        for i, p in enumerate(photo):
+            pid = str(p["post_id"])
+            if any((media_root / "raw" / "posts" / pid / "images").glob("*")) and not getattr(args, "force_images", False):
+                print(f"slides for {pid} already on disk — skipped")
+                continue
+            try:
+                await images.collect_one(api, p["canonical_url"], img_args)
+            except Exception as exc:
+                print(f"slides {pid}: {type(exc).__name__}: {exc}")
+            if i < len(photo) - 1 and args.between_posts_delay > 0:
+                await asyncio.sleep(args.between_posts_delay)
+    if args.no_ocr:
+        return
+    try:
+        import ocr_vlm
+        if not ocr_vlm.load_key():
+            print("OCR skipped: no API key (openrouter_key.txt / OPENROUTER_API_KEY)")
+            return
+        print(f"\nTranscribing slides with {args.ocr_model}")
+        rows, per_post = ocr_vlm.transcribe(media_root, model=args.ocr_model, post_ids={str(p["post_id"]) for p in photo})
+    except Exception as exc:
+        print("OCR failed:", f"{type(exc).__name__}: {exc}")
+        return
+    filled = 0
+    for p in photo:
+        r = per_post.get(str(p["post_id"]))
+        if not r:
+            continue
+        f = p["fields"]
+        f["slides_count"] = r["slides"]
+        f["slides_text"] = r["text"]
+        f["slides_schools"] = "; ".join(r["schools"])
+        f["slides_context"] = "; ".join(r["contexts"])
+        f["slides_comparison"] = bool(r["comparison"])
+        f["slides_summary"] = "; ".join(x.get("summary", "") for x in rows if x["post_id"] == str(p["post_id"]) and x.get("summary"))
+        filled += 1
+    print(f"Slides text filled for {filled}/{len(photo)} photo posts")
+
+
 def gather_queries(args):
     queries = []
 
@@ -394,8 +489,9 @@ async def main_async(args):
     from pytok.accounts import AccountsPool
 
     queries = gather_queries(args)
-    if not queries:
-        raise ValueError("Provide --query or --queries-file")
+    hashtags = gather_hashtags(args)
+    if not queries and not hashtags:
+        raise ValueError("Provide --query / --queries-file and/or --hashtag / --hashtags-file")
 
     run_id = stamp()
     search_dir = args.case_dir / "search"
@@ -445,6 +541,14 @@ async def main_async(args):
                 )
                 await asyncio.sleep(args.between_queries_delay)
 
+        for hi, tag in enumerate(hashtags):
+            try:
+                all_records.extend(await run_hashtag_feed(api, tag, args.search_count))
+            except Exception as exc:
+                print("HASHTAG STOP for this tag; no automatic retry:", f"{type(exc).__name__}: {exc}")
+            if hi < len(hashtags) - 1 and args.between_queries_delay > 0:
+                await asyncio.sleep(args.between_queries_delay)
+
         # Save the raw retrieval layer BEFORE opening result posts.
         with raw_path.open("x", encoding="utf-8") as f:
             for rec in all_records:
@@ -455,7 +559,7 @@ async def main_async(args):
         unique_posts = merge_search_records(all_records)
         json_dump(dedup_path, {
             "created_at_utc": utc_now(),
-            "queries": queries,
+            "queries": queries + ["#" + t for t in hashtags],
             "requested_per_query": args.search_count,
             "raw_result_count": len(all_records),
             "unique_post_count": len(unique_posts),
@@ -474,6 +578,8 @@ async def main_async(args):
 
         # Flat table layer (account creation date, author/post stats, subtitles).
         await enrich_posts_table(api, unique_posts, args)
+        # Carousels: download slides + transcribe them, fill slides_* columns.
+        await collect_slides_and_ocr(api, unique_posts, args)
         table_paths = rows_to_table(
             [p["fields"] for p in unique_posts],
             search_dir / f"search_posts_{run_id}",
@@ -481,7 +587,7 @@ async def main_async(args):
         # Re-save dedup JSON so it carries the enriched fields too.
         json_dump(dedup_path, {
             "created_at_utc": utc_now(),
-            "queries": queries,
+            "queries": queries + ["#" + t for t in hashtags],
             "requested_per_query": args.search_count,
             "raw_result_count": len(all_records),
             "unique_post_count": len(unique_posts),
@@ -607,6 +713,31 @@ def main():
         help="Save search results only; do not open posts or collect comments.",
     )
     parser.add_argument(
+        "--hashtag",
+        action="append",
+        help="Hashtag feed to add (without #). Repeat for several.",
+    )
+    parser.add_argument(
+        "--hashtags-file",
+        type=Path,
+        help="UTF-8 text file, one hashtag per line.",
+    )
+    parser.add_argument(
+        "--no-images",
+        action="store_true",
+        help="Do not download carousel slides of photo posts.",
+    )
+    parser.add_argument(
+        "--no-ocr",
+        action="store_true",
+        help="Do not transcribe slides through the vision API.",
+    )
+    parser.add_argument(
+        "--ocr-model",
+        default="google/gemini-2.5-flash",
+        help="Vision model for slide transcription (OpenRouter id).",
+    )
+    parser.add_argument(
         "--subtitles",
         action="store_true",
         help="Download TikTok auto-subtitles text into the posts table (HTTP to CDN).",
@@ -683,9 +814,8 @@ def main():
     if args.between_queries_delay < 0:
         parser.error("--between-queries-delay must be >= 0")
 
-    queries = gather_queries(args)
-    if not queries:
-        parser.error("Provide at least one --query or --queries-file")
+    if not gather_queries(args) and not gather_hashtags(args):
+        parser.error("Provide at least one --query/--queries-file or --hashtag/--hashtags-file")
 
     return asyncio.run(main_async(args))
 

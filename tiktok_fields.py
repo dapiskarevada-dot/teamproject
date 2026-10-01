@@ -47,6 +47,13 @@ COLUMNS = {
     "music_title": "Звук",
     "subtitle_langs": "Языки субтитров",
     "subtitle_text": "Субтитры",
+    # заполняются конвейером для фото-постов (каруселей) после расшифровки слайдов
+    "slides_count": "Слайдов",
+    "slides_text": "Текст со слайдов",
+    "slides_schools": "Школы на слайдах",
+    "slides_context": "Контекст слайдов",
+    "slides_comparison": "Сравнение школ на слайдах",
+    "slides_summary": "О чём слайды",
 }
 
 

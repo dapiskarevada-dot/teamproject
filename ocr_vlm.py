@@ -33,16 +33,38 @@ DEFAULT_MODEL = "google/gemini-2.5-flash"
 DEFAULT_BASE = "https://openrouter.ai/api/v1"
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
-PROMPT = (
-    "Это слайд из TikTok-карусели про подготовку к ЕГЭ/ОГЭ. Ответь строго в JSON без пояснений:\n"
-    '{"text": "<весь текст со слайда дословно, в порядке чтения, включая стикеры и мелкий текст; '
-    'пустая строка, если текста нет>",\n'
-    ' "schools": ["<названия онлайн-школ, упомянутых на слайде: Умскул, ЕГЭленд, Фоксфорд, Сотка, Вебиум, Турбо, '
-    'Школково, Lomonosov School, Skysmart и др.; пустой список, если нет>"],\n'
-    ' "context": "<один из: реклама, отзыв, сравнение школ, мем/юмор, учебный контент, личная история, другое>",\n'
-    ' "comparison": <true, если на слайде сравниваются или противопоставляются школы, иначе false>,\n'
-    ' "summary": "<одна фраза по-русски: о чём слайд>"}'
-)
+DEFAULT_SCHOOLS = ["Умскул", "ЕГЭленд", "Фоксфорд", "Сотка", "Вебиум", "Турбо", "Школково",
+                   "Lomonosov School", "Skysmart", "Учи.ру", "99 баллов", "Insperia", "Тетрика"]
+
+
+def load_schools(path: Path | None = None):
+    """schools.txt: одна школа в строке; через запятую можно дать синонимы (Умскул, Umschool)."""
+    path = path or Path(__file__).with_name("schools.txt")
+    if not path.exists():
+        return DEFAULT_SCHOOLS
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip()
+        if line:
+            out.append(line)
+    return out or DEFAULT_SCHOOLS
+
+
+def build_prompt(schools):
+    names = ", ".join(schools)
+    return (
+        "Это слайд из TikTok-карусели про подготовку к ЕГЭ/ОГЭ. Ответь строго в JSON без пояснений:\n"
+        '{"text": "<весь текст со слайда дословно, в порядке чтения, включая стикеры и мелкий текст; '
+        'пустая строка, если текста нет>",\n'
+        f' "schools": ["<названия онлайн-школ, упомянутых на слайде (в т.ч. в написании латиницей или с опечатками): {names}; '
+        'другие школы тоже называй; пустой список, если нет>"],\n'
+        ' "context": "<один из: реклама, отзыв, сравнение школ, мем/юмор, учебный контент, личная история, другое>",\n'
+        ' "comparison": <true, если на слайде сравниваются или противопоставляются школы, иначе false>,\n'
+        ' "summary": "<одна фраза по-русски: о чём слайд>"}'
+    )
+
+
+PROMPT = build_prompt(DEFAULT_SCHOOLS)
 
 COLUMNS = {
     "post_id": "ID поста", "post_url": "Ссылка на пост", "slide": "№ слайда", "file": "Файл",
@@ -60,13 +82,14 @@ def load_key():
     return key
 
 
-def ask_model(key, base_url, model, image: Path, timeout=120, retries=3):
+def ask_model(key, base_url, model, image: Path, timeout=120, retries=3, prompt=None):
     import requests
+    prompt = prompt or PROMPT
     mime = "image/png" if image.suffix.lower() == ".png" else ("image/webp" if image.suffix.lower() == ".webp" else "image/jpeg")
     b64 = base64.b64encode(image.read_bytes()).decode()
     body = {"model": model, "temperature": 0, "max_tokens": 1500,
             "messages": [{"role": "user", "content": [
-                {"type": "text", "text": PROMPT},
+                {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}]}]}
     last = None
     for attempt in range(retries):
@@ -147,6 +170,79 @@ def write_tables(rows, out_dir: Path, model: str):
     return [out_dir / "images_text.xlsx", out_dir / "posts_text.xlsx"]
 
 
+def school_mentioned(schools_found, school):
+    """True, если среди найденных школ есть целевая (учитывая синонимы через запятую в schools.txt)."""
+    aliases = [a.strip().lower() for a in school.split(",") if a.strip()]
+    for s in schools_found or []:
+        sl = str(s).lower()
+        if any(a in sl or sl in a for a in aliases):
+            return True
+    return False
+
+
+def transcribe(root: Path, model=DEFAULT_MODEL, base_url=DEFAULT_BASE, post_ids=None, limit=None,
+               force=False, schools=None, key=None, quiet=False):
+    """
+    Распознаёт все слайды в root/raw/posts/*/images, пишет таблицы и возвращает (rows, per_post),
+    где per_post = {post_id: {"slides", "text", "schools", "contexts", "comparison", "errors"}}.
+    """
+    key = key or load_key()
+    if not key:
+        raise RuntimeError("Нет ключа API: openrouter_key.txt или OPENROUTER_API_KEY")
+    schools = schools or load_schools()
+    prompt = build_prompt(schools)
+    posts_dir = root / "raw" / "posts"
+    images = []
+    for d in sorted(posts_dir.glob("*")):
+        if post_ids and d.name not in post_ids:
+            continue
+        for f in sorted((d / "images").glob("*")):
+            if f.suffix.lower() in IMAGE_EXT:
+                images.append((d, f))
+    if limit:
+        images = images[:limit]
+    if not quiet:
+        print(f"Картинок: {len(images)} | модель: {model}")
+    rows = []
+    tag = re.sub(r"[^\w.-]", "_", model)
+    for post_dir, img in images:
+        url, _ = post_meta(post_dir)
+        cache = img.with_name(f"{img.stem}.{tag}.vlm.json")
+        row = {"post_id": post_dir.name, "post_url": url, "slide": int(img.name[:3]) + 1 if img.name[:3].isdigit() else "",
+               "file": str(img), "model": model, "seconds": None, "error": ""}
+        if cache.exists() and not force:
+            d = json.loads(cache.read_text(encoding="utf-8")); row.update(d["parsed"]); row["seconds"] = d.get("seconds")
+            if not quiet: print(f"  cached  {img.name}  | {str(row.get('text',''))[:70]}")
+        else:
+            t0 = time.time()
+            try:
+                raw = ask_model(key, base_url, model, img, prompt=prompt)
+                parsed = parse_json(raw)
+                row.update(parsed); row["seconds"] = round(time.time() - t0, 1)
+                cache.write_text(json.dumps({"model": model, "raw": raw, "parsed": parsed, "seconds": row["seconds"]},
+                                            ensure_ascii=False, indent=1), encoding="utf-8")
+                if not quiet: print(f"  {row['seconds']:>5}s  {img.name}  | {str(parsed.get('text',''))[:70]}")
+            except Exception as exc:
+                row["error"] = str(exc)[:300]; row["seconds"] = round(time.time() - t0, 1)
+                print(f"  ERROR  {img.name}: {row['error'][:120]}")
+        rows.append(row)
+    per_post = {}
+    for r in rows:
+        p = per_post.setdefault(r["post_id"], {"slides": 0, "texts": [], "schools": set(), "contexts": [], "comparison": False, "errors": 0})
+        p["slides"] += 1
+        if r.get("error"):
+            p["errors"] += 1; continue
+        if r.get("text"): p["texts"].append(f"[{r['slide']}] {r['text']}")
+        p["schools"].update(r.get("schools") or [])
+        if r.get("context"): p["contexts"].append(r["context"])
+        p["comparison"] = p["comparison"] or bool(r.get("comparison"))
+    for p in per_post.values():
+        p["text"] = "\n".join(p.pop("texts")); p["schools"] = sorted(p["schools"]); p["contexts"] = sorted(set(p["contexts"]))
+    if rows:
+        write_tables(rows, root, model)
+    return rows, per_post
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", type=Path, default=Path("cases/tiktok_media"))
@@ -157,53 +253,15 @@ def main():
     ap.add_argument("--force", action="store_true", help="переспросить модель даже если есть .vlm.json")
     a = ap.parse_args()
 
-    key = load_key()
-    if not key:
-        print("Нет ключа API: положите его в openrouter_key.txt рядом со скриптом или в OPENROUTER_API_KEY"); return 2
-
-    posts_dir = a.root / "raw" / "posts"
-    images = []
-    for d in sorted(posts_dir.glob("*")):
-        if a.post and d.name not in a.post:
-            continue
-        for f in sorted((d / "images").glob("*")):
-            if f.suffix.lower() in IMAGE_EXT:
-                images.append((d, f))
-    if a.limit:
-        images = images[: a.limit]
-    if not images:
-        print("Картинок нет в", posts_dir); return 1
-    print(f"Картинок: {len(images)} | модель: {a.model}")
-
-    rows, done = [], 0
-    for post_dir, img in images:
-        url, _ = post_meta(post_dir)
-        tag = re.sub(r"[^\w.-]", "_", a.model)
-        cache = img.with_name(f"{img.stem}.{tag}.vlm.json")
-        row = {"post_id": post_dir.name, "post_url": url, "slide": int(img.name[:3]) + 1 if img.name[:3].isdigit() else "",
-               "file": str(img), "model": a.model, "seconds": None, "error": ""}
-        if cache.exists() and not a.force:
-            d = json.loads(cache.read_text(encoding="utf-8")); row.update(d["parsed"]); row["seconds"] = d.get("seconds")
-            print(f"  cached  {img.name}  | {str(row.get('text',''))[:70]}")
-        else:
-            t0 = time.time()
-            try:
-                raw = ask_model(key, a.base_url, a.model, img)
-                parsed = parse_json(raw)
-                row.update(parsed); row["seconds"] = round(time.time() - t0, 1)
-                cache.write_text(json.dumps({"model": a.model, "raw": raw, "parsed": parsed, "seconds": row["seconds"]},
-                                            ensure_ascii=False, indent=1), encoding="utf-8")
-                print(f"  {row['seconds']:>5}s  {img.name}  | {str(parsed.get('text',''))[:70]}")
-            except Exception as exc:
-                row["error"] = str(exc)[:300]; row["seconds"] = round(time.time() - t0, 1)
-                print(f"  ERROR  {img.name}: {row['error'][:120]}")
-        rows.append(row); done += 1
-
-    out = write_tables(rows, a.root, a.model)
+    try:
+        rows, per_post = transcribe(a.root, a.model, a.base_url, post_ids=a.post or None, limit=a.limit, force=a.force)
+    except RuntimeError as exc:
+        print(exc); return 2
+    if not rows:
+        print("Картинок нет в", a.root / "raw" / "posts"); return 1
     ok = sum(1 for r in rows if not r["error"])
     print(f"\nГотово: {ok}/{len(rows)} картинок распознано")
-    for p in out:
-        print("TABLE:", p)
+    print("TABLE:", a.root / "images_text.xlsx"); print("TABLE:", a.root / "posts_text.xlsx")
     return 0
 
 
