@@ -41,6 +41,20 @@ python collect_tiktok_search_threads.py --check
 
 ## Конвейер целиком (одна команда)
 
+**Финальная точка входа — `pipeline.py` (на Mac: двойной клик по `RUN.command`).**
+Настройки (школа, файлы запросов/хэштегов, лимиты, Whisper, модель OCR) — в шапке `pipeline.py`
+или аргументами:
+
+```
+python pipeline.py                     # полный прогон по настройкам из шапки
+python pipeline.py --test              # пробный: 5 результатов на источник, 10 комментариев
+python pipeline.py --final-only        # только пересобрать ИТОГ_<школа>.xlsx из уже собранного
+python pipeline.py --school Фоксфорд --queries queries_foxford.txt --hashtags hashtags_foxford.txt
+```
+
+На выходе `ИТОГ_<школа>.xlsx` с листами **Посты** (дедуп по всем прогонам), **Комментарии и реплаи**, **Сводка**.
+Под капотом `pipeline.py` вызывает:
+
 ```
 python collect_tiktok_search_threads.py --queries-file queries.txt --hashtags-file hashtags.txt --search-count 200 --comments 200 --fetch-author
 ```
