@@ -142,6 +142,65 @@ def download(url: str, referer: str, timeout: int = 30):
         return resp.read(), resp.headers.get("Content-Type")
 
 
+async def download_in_browser(page, url: str, timeout_ms: int = 30000):
+    """
+    Fetch the asset from inside the page (same cookies/headers/VPN as the
+    browser). Direct Python downloads fail on machines where the CDN is
+    unreachable outside the browser (DNS / VPN certificate issues).
+    """
+    import base64
+    res = await page.evaluate(
+        r"""async ([url, timeoutMs]) => {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), timeoutMs);
+          try {
+            const r = await fetch(url, {credentials: 'include', signal: ctrl.signal});
+            const buf = await r.arrayBuffer();
+            let bin = ''; const bytes = new Uint8Array(buf);
+            for (let i = 0; i < bytes.length; i += 0x8000)
+              bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+            return {ok: r.ok, status: r.status, ct: r.headers.get('content-type') || '', b64: btoa(bin)};
+          } catch (e) { return {ok: false, status: 0, error: String(e)}; }
+          finally { clearTimeout(t); }
+        }""",
+        [url, timeout_ms],
+    )
+    if not res or not res.get("ok"):
+        raise RuntimeError(f"in-browser fetch failed: status={res.get('status') if res else None} {res.get('error', '') if res else ''}")
+    return base64.b64decode(res["b64"]), res.get("ct") or ""
+
+
+async def download_via_screenshot(page, url: str, max_side: int = 1400):
+    """
+    CORS-proof fallback: let the browser render the image in an injected <img>
+    and screenshot that element. Returns PNG bytes (re-encoded, fine for OCR).
+    """
+    size = await page.evaluate(
+        r"""async ([url, maxSide]) => {
+          const old = document.getElementById('__ocr_img'); if (old) old.remove();
+          const img = document.createElement('img');
+          img.id = '__ocr_img'; img.decoding = 'sync';
+          img.style.cssText = 'position:fixed;left:0;top:0;z-index:2147483647;background:#fff;';
+          const done = new Promise((res, rej) => { img.onload = () => res(true); img.onerror = () => rej(new Error('img load failed')); });
+          img.src = url; document.body.appendChild(img);
+          await done;
+          const w = img.naturalWidth, h = img.naturalHeight;
+          const k = Math.min(1, maxSide / Math.max(w, h), (window.innerWidth - 4) / w, (window.innerHeight - 4) / h);
+          img.style.width = Math.floor(w * k) + 'px'; img.style.height = Math.floor(h * k) + 'px';
+          return {w, h, k};
+        }""",
+        [url, max_side],
+    )
+    try:
+        data = await page.locator("#__ocr_img").screenshot(type="png", timeout=15000)
+    finally:
+        try:
+            await page.evaluate("() => { const e = document.getElementById('__ocr_img'); if (e) e.remove(); }")
+        except Exception:
+            pass
+    return data, "image/png"
+
+
 async def browser_image_candidates(page, min_width: int, min_height: int):
     script = r"""
     (() => {
@@ -323,13 +382,40 @@ async def collect_one(api, url: str, args):
 
     try:
         page = api._page
-        await page.get(info["url"])
+        # Current PyTok exposes a plain Playwright Page (no .get()); use PyTok's
+        # own navigate() so its request tracking and delays stay in effect.
+        await api.navigate(info["url"], wait_until="domcontentloaded")
         await asyncio.sleep(args.page_wait)
         manifest["page_url"] = page.url
         print("Browser:", page.url)
 
         dom = await browser_image_candidates(page, args.min_width, args.min_height)
         hyd = await hydration_candidates(page)
+
+        # TikTok renders only the current slide (+/-1). Step through the
+        # carousel with ArrowRight and collect the rendered <img> on each
+        # step, so every slide is captured from the DOM (the DOM URLs are the
+        # ones the browser can actually load).
+        try:
+            await page.keyboard.press("Escape")
+            prev_urls = {c.get("url") for c in dom}
+            stale_steps = 0
+            for step in range(60):
+                await page.keyboard.press("ArrowRight")
+                await asyncio.sleep(1.2)
+                more = await browser_image_candidates(page, args.min_width, args.min_height)
+                new = [c for c in more if c.get("url") not in prev_urls]
+                if new:
+                    dom += new
+                    prev_urls.update(c.get("url") for c in new)
+                    stale_steps = 0
+                else:
+                    stale_steps += 1
+                    if stale_steps >= 2:
+                        break
+            print(f"Carousel stepping: {step + 1} steps, DOM images {len(prev_urls)}")
+        except Exception as exc:
+            print("Carousel stepping failed:", type(exc).__name__, exc)
 
         merged = {}
         for c in hyd + dom:
@@ -355,7 +441,14 @@ async def collect_one(api, url: str, args):
             if not u:
                 continue
             try:
-                data, ct = await asyncio.to_thread(download, u, info["url"])
+                try:
+                    data, ct = await download_in_browser(page, u)
+                except Exception as exc_b:
+                    try:
+                        data, ct = await download_via_screenshot(page, u)
+                    except Exception as exc_s:
+                        print(f"   browser fetch/screenshot {idx} failed ({type(exc_s).__name__}), trying direct download")
+                        data, ct = await asyncio.to_thread(download, u, info["url"])
             except Exception as exc:
                 print(f"skip download {idx}: {type(exc).__name__}: {exc}")
                 continue
