@@ -342,22 +342,21 @@ async def collect_videos_and_transcribe(api, unique_posts, args):
             if need_video and (args.whisper == "all" or not f.get("subtitle_text")):
                 data = None
                 try:
-                    data = await asyncio.wait_for(video.bytes(), timeout=180)
+                    data = await asyncio.wait_for(video.bytes(), timeout=120)
                 except Exception as exc:
-                    print(f"  video {pid}: pytok bytes failed: {str(exc)[:120]}")
+                    print(f"  video {pid}: pytok bytes failed ({str(exc)[:80]}) -> browser download")
                 if data and len(data) > 20_000:
                     post_dir.mkdir(parents=True, exist_ok=True)
                     (post_dir / "video.mp4").write_bytes(data)
                     f["video_file"] = str(post_dir / "video.mp4")
                     print(f"  video {pid}: saved {len(data) // 1024} KB" + (" | subs: tiktok" if f.get("subtitle_text") else ""))
                 else:
-                    try:
-                        from transcribe_whisper import download_ytdlp
-                        path = await asyncio.to_thread(download_ytdlp, p["canonical_url"], post_dir)
-                        if path:
-                            f["video_file"] = str(path); print(f"  video {pid}: saved via yt-dlp")
-                    except Exception as exc:
-                        print(f"  video {pid}: yt-dlp failed: {str(exc)[:120]}")
+                    from video_download import download_video
+                    path = await download_video(api, p["canonical_url"], item, post_dir)
+                    if path:
+                        f["video_file"] = str(path)
+                    else:
+                        print(f"  video {pid}: NOT downloaded (all methods failed)")
         except Exception as exc:
             print(f"  video {pid}: {type(exc).__name__}: {str(exc)[:160]}")
         if i < len(videos) - 1 and args.request_delay > 0:

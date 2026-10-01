@@ -10,3 +10,4 @@ ocr_benchmark/
 parallel/
 *.vlm.json
 diag_photo.py
+cookies.txt
