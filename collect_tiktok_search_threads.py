@@ -576,6 +576,38 @@ async def enrich_posts_table(api, unique_posts, args):
                   f"subs={'yes' if row.get('subtitle_text') else 'no'}")
 
 
+def already_collected(case_dir: Path, post_id: str) -> bool:
+    """True if a successful comments run for this post already exists in case_dir."""
+    d = case_dir / "raw" / "posts" / str(post_id)
+    for f in d.glob("thread_*_summary.json"):
+        try:
+            if json.loads(f.read_text(encoding="utf-8")).get("status") == "success":
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def apply_post_limit(unique_posts, args):
+    """
+    --prefer "Умскул,Umschool": posts whose description/hashtags/author mention an alias go first
+    (stable order otherwise). --max-posts N: keep at most N posts for the heavy steps
+    (slides, videos, Whisper, comments). 0 = no limit.
+    """
+    aliases = [a.strip().lower() for a in (args.prefer or "").split(",") if a.strip()]
+    if aliases:
+        def rel(p):
+            f = p.get("fields") or {}
+            blob = " ".join(str(f.get(k) or "") for k in ("description", "hashtags", "author_username", "author_nickname")).lower()
+            return 0 if any(a in blob for a in aliases) else 1
+        unique_posts = sorted(unique_posts, key=rel)
+        print("Posts mentioning", aliases, ":", sum(rel(p) == 0 for p in unique_posts), "of", len(unique_posts))
+    if args.max_posts and len(unique_posts) > args.max_posts:
+        print(f"Post limit: keeping {args.max_posts} of {len(unique_posts)} unique posts")
+        unique_posts = unique_posts[:args.max_posts]
+    return unique_posts
+
+
 async def main_async(args):
     from pytok.tiktok import PyTok
     from pytok.accounts import AccountsPool
@@ -649,6 +681,7 @@ async def main_async(args):
                 )
 
         unique_posts = merge_search_records(all_records)
+        unique_posts = apply_post_limit(unique_posts, args)
         json_dump(dedup_path, {
             "created_at_utc": utc_now(),
             "queries": queries + ["#" + t for t in hashtags],
@@ -719,6 +752,11 @@ async def main_async(args):
             reply_root_delay=args.reply_root_delay,
             between_posts_delay=args.between_posts_delay,
         )
+
+        if args.skip_collected:
+            before = len(unique_posts)
+            unique_posts = [p for p in unique_posts if not already_collected(args.case_dir, p["post_id"])]
+            print(f"Comments: skipping {before - len(unique_posts)} posts already collected in {args.case_dir}")
 
         for pi, item in enumerate(unique_posts):
             summary = await collect_one(
@@ -800,6 +838,22 @@ def main():
         type=int,
         default=DEFAULT_COMMENTS,
         help=f"Top-level comments per unique result post (default {DEFAULT_COMMENTS}).",
+    )
+    parser.add_argument(
+        "--max-posts",
+        type=int,
+        default=0,
+        help="Keep at most N unique posts for slides/videos/comments (0 = all).",
+    )
+    parser.add_argument(
+        "--prefer",
+        default="",
+        help="Comma-separated school aliases; posts mentioning them are processed first (used with --max-posts).",
+    )
+    parser.add_argument(
+        "--skip-collected",
+        action="store_true",
+        help="Do not re-collect comments for posts that already have a successful run in --case-dir.",
     )
     parser.add_argument(
         "--search-only",
