@@ -1,0 +1,8 @@
+__pycache__/
+.venv/
+cases/
+*.log
+github_token.txt
+*.command
+queries.txt
+photo_urls.txt
