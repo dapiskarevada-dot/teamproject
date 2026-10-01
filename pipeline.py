@@ -39,6 +39,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+if sys.platform.startswith("win"):
+    os.environ.setdefault("PYTHONUTF8", "1")        # дочерние процессы печатают кириллицу без ошибок
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ============================ НАСТРОЙКИ ПО УМОЛЧАНИЮ ============================
 PLAN_FILE = "schools_plan.txt"    # школы + их запросы и хэштеги, по строке на школу (порядок = очередь)
 MAX_POSTS = 500                   # лимит постов на школу (слайды, видео, Whisper, комментарии); 0 = без лимита
@@ -245,6 +254,18 @@ def build_all_schools_workbook(results):
     return out
 
 
+# ------------------------------------------------------------------ не давать компьютеру уснуть
+def keep_awake():
+    """Windows: системный флаг «не спать» на время работы (на Mac это делает caffeinate в .command)."""
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001 | 0x00000040)
+            print("=== Windows: режим «не засыпать» включён на время сбора")
+        except Exception as exc:
+            print("Не удалось включить режим «не засыпать»:", exc)
+
+
 # ------------------------------------------------------------------ оркестрация
 def process_school(a, school):
     """Полный цикл для одной школы (вызывается в основном процессе или в дочернем при --parallel)."""
@@ -310,7 +331,20 @@ def run_parallel(a, todo):
         time.sleep(5)
 
 
+class _Tee:
+    """stdout и в консоль, и в файл (для Windows, где нет tee)."""
+    def __init__(self, path):
+        self.f = open(path, "a", encoding="utf-8"); self.c = sys.stdout
+    def write(self, d):
+        self.c.write(d); self.f.write(d); self.f.flush()
+    def flush(self):
+        self.c.flush(); self.f.flush()
+
+
 def main():
+    if "--log" in sys.argv:
+        sys.argv.remove("--log")
+        sys.stdout = sys.stderr = _Tee(f"night_{datetime.now():%Y%m%d_%H%M}.log")
     ap = argparse.ArgumentParser(description="Весь конвейер одной командой (все школы из плана)")
     ap.add_argument("--plan", default=PLAN_FILE, help="файл плана школ")
     ap.add_argument("--only", default="", help="только эти школы из плана, через запятую")
@@ -378,6 +412,8 @@ def main():
             a.parallel = max(1, n_acc)
 
     rc_all = 0
+    if not a.final_only:
+        keep_awake()
     if a.parallel > 1 and len(todo) > 1 and not a.final_only:
         run_parallel(a, todo)
     else:

@@ -11,3 +11,4 @@ parallel/
 *.vlm.json
 diag_photo.py
 cookies.txt
+pipeline_state.json

@@ -28,7 +28,8 @@
 | `1b_camoufox.command` | Если camoufox не скачался (GitHub rate limit): токен в `github_token.txt` |
 | `1c_whisper_setup.command` | Один раз: faster-whisper |
 | `2_login.command` | Добавить аккаунты TikTok (несколько подряд, логин в браузере вручную) |
-| **`НА_НОЧЬ.command`** | **Добавить аккаунты → проверки → все школы параллельно (поток на аккаунт), Mac не уснёт** |
+| **`НА_НОЧЬ.command`** | **Mac: обновить код → поставить окружение → (добавить аккаунты) → все школы параллельно, Mac не уснёт** |
+| **`НА_НОЧЬ.bat`** | **Windows: то же самое одним двойным кликом** (нужен Python 3.11+ с python.org, галочка «Add Python to PATH») |
 | `RUN.command` | То же без добавления аккаунтов: `./RUN.command`, `./RUN.command --test`, `./RUN.command --only Умскул` |
 | `0_update_from_github.command` | Подтянуть свежий код из GitHub |
 | `0_unlock_account.command` | Снять блокировки аккаунтов после оборванного запуска |
