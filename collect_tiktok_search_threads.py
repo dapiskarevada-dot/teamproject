@@ -558,6 +558,17 @@ async def main_async(args):
     })
 
     print("\nFINAL SUMMARY:", batch_path)
+
+    # Separate comments+replies table for this run (one row per comment).
+    try:
+        from export_comments_table import export_from_summary
+        rows, tables = export_from_summary(batch_path)
+        n1 = sum(r["level"] == 1 for r in rows)
+        print(f"COMMENTS TABLE: {n1} comments, {len(rows) - n1} replies")
+        for t in tables:
+            print("COMMENTS TABLE:", t)
+    except Exception as exc:
+        print("Comments table export failed:", f"{type(exc).__name__}: {exc}")
     return 0
 
 
