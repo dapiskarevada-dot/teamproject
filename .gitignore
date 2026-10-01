@@ -3,8 +3,6 @@ __pycache__/
 cases/
 *.log
 github_token.txt
-*.command
-queries.txt
 photo_urls.txt
 openrouter_key.txt
 ocr_benchmark/
