@@ -18,6 +18,7 @@ if curl -sSL -m 60 -o "$TMP/main.zip" "$REPO_ZIP" 2>/dev/null && unzip -q -o "$T
   SRC="$TMP/teamproject-main"
   cp "$SRC"/*.py . && cp "$SRC"/*.command . && cp "$SRC"/README.md "$SRC"/requirements.txt "$SRC"/schools.txt .
   [ -f schools_plan.txt ] || cp "$SRC/schools_plan.txt" .
+  for f in "$SRC"/plan_*.txt; do [ -f "$(basename "$f")" ] || cp "$f" .; done
   chmod +x *.command
   echo ">>> Код обновлён."
 else

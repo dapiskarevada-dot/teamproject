@@ -196,7 +196,7 @@ def build_final_workbook(school_name: str, case_dir: Path):
     def mentions(r):
         blob = " ".join(str(r.get(k) or "") for k in ("description", "hashtags", "slides_text", "slides_schools", "transcript_whisper", "subtitle_text")).lower()
         return any(al in blob for al in aliases)
-    mention_col = f"Упомянута школа ({short})"
+    mention_col = f"Упомянута школа ({short})" if len(aliases) <= 3 else "Упомянута какая-либо школа из списка"
     dfp.insert(0, "Школа (план)", short)
     dfp[mention_col] = [mentions(r) for r in rows]
 
