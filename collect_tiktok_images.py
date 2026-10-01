@@ -201,6 +201,49 @@ async def download_via_screenshot(page, url: str, max_side: int = 1400):
     return data, "image/png"
 
 
+async def swiper_slide_candidates(page):
+    """
+    TikTok photo page (2026): every slide is <img class="...ImgPhotoSlide">
+    inside .swiper-slide (looped copies carry 'swiper-slide-duplicate').
+    Returns the slides in order, deduplicated by URL. Empty list if the page
+    has no photo swiper (then the generic DOM/hydration scan is used).
+    """
+    try:
+        return await page.evaluate(
+            r"""(() => {
+              const root = document.querySelector('[class*="DivSwiperContainer"], .swiper') || document;
+              const imgs = Array.from(root.querySelectorAll('.swiper-slide img, img[class*="PhotoSlide"], img[class*="photoSlide"]'));
+              const out = []; const seen = new Set(); let idx = 0;
+              for (const i of imgs) {
+                const slide = i.closest('.swiper-slide');
+                if (slide && /swiper-slide-duplicate/.test(slide.className)) continue;
+                const src = i.currentSrc || i.src;
+                if (!src || !/^https?:/.test(src) || seen.has(src)) continue;
+                seen.add(src);
+                out.push({url: src, source: 'swiper-slide', slide_index: idx++,
+                          natural_width: i.naturalWidth, natural_height: i.naturalHeight,
+                          rendered_width: Math.round(i.getBoundingClientRect().width),
+                          rendered_height: Math.round(i.getBoundingClientRect().height),
+                          alt: i.getAttribute('alt') || '', class_name: i.className || '', data_e2e: '', visible: true});
+              }
+              if (!out.length) {   // only duplicates visible? take them too, in order
+                for (const i of imgs) {
+                  const src = i.currentSrc || i.src;
+                  if (!src || seen.has(src)) continue; seen.add(src);
+                  out.push({url: src, source: 'swiper-slide-dup', slide_index: idx++,
+                            natural_width: i.naturalWidth, natural_height: i.naturalHeight,
+                            rendered_width: Math.round(i.getBoundingClientRect().width),
+                            rendered_height: Math.round(i.getBoundingClientRect().height),
+                            alt: '', class_name: i.className || '', data_e2e: '', visible: true});
+                }
+              }
+              return out;
+            })()"""
+        )
+    except Exception:
+        return []
+
+
 async def browser_image_candidates(page, min_width: int, min_height: int):
     script = r"""
     (() => {
@@ -394,14 +437,21 @@ async def collect_one(api, url: str, args):
         manifest["page_url"] = page.url
         print("Browser:", page.url)
 
-        dom = await browser_image_candidates(page, args.min_width, args.min_height)
-        hyd = await hydration_candidates(page)
+        slides = await swiper_slide_candidates(page)
+        if slides:
+            print(f"Photo swiper found: {len(slides)} slides")
+            dom, hyd = slides, []
+        else:
+            dom = await browser_image_candidates(page, args.min_width, args.min_height)
+            hyd = await hydration_candidates(page)
 
         # TikTok renders only the current slide (+/-1). Step through the
         # carousel with ArrowRight and collect the rendered <img> on each
         # step, so every slide is captured from the DOM (the DOM URLs are the
         # ones the browser can actually load).
         try:
+            if slides:
+                raise StopIteration("all slides already in DOM")
             await page.keyboard.press("Escape")
             prev_urls = {c.get("url") for c in dom}
             stale_steps = 0
@@ -430,6 +480,8 @@ async def collect_one(api, url: str, args):
                     if stale_steps >= 2:
                         break
             print(f"Carousel stepping: {step + 1} steps, DOM images {len(prev_urls)}")
+        except StopIteration:
+            pass
         except Exception as exc:
             print("Carousel stepping failed:", type(exc).__name__, exc)
 
@@ -443,7 +495,7 @@ async def collect_one(api, url: str, args):
             else:
                 merged[u].update({k: v for k, v in c.items() if v not in (None, "", 0, False)})
 
-        candidates = sorted(merged.values(), key=candidate_score, reverse=True)
+        candidates = list(merged.values()) if slides else sorted(merged.values(), key=candidate_score, reverse=True)
         manifest["candidates_total"] = len(candidates)
         print("Candidates:", len(candidates), "| from DOM:", len(dom), "| from hydration:", len(hyd))
 
