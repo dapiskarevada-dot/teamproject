@@ -109,18 +109,24 @@ def mark(name, **kw):
 
 
 # ------------------------------------------------------------------ аккаунты
-def show_accounts():
+def show_accounts(reset_locks=False):
+    """Печатает активные аккаунты пула и возвращает их число (0, если пул недоступен)."""
     try:
-        out = subprocess.run([sys.executable, "-m", "pytok.accounts.cli", "list"], capture_output=True, text=True, timeout=60).stdout
+        import asyncio
+        from pytok.accounts import AccountsPool
+        async def _go():
+            pool = AccountsPool()
+            if reset_locks:
+                await pool.reset_locks()          # снять «in use» от прошлых оборванных запусков
+            return await pool.get_active_accounts(), await pool.get_inactive_accounts()
+        active, inactive = asyncio.run(_go())
     except Exception as exc:
         print("Не удалось прочитать пул аккаунтов:", exc)
         return 0
-    lines = [l for l in out.splitlines() if l.strip()]
-    print("=== Аккаунты TikTok в пуле:")
-    for l in lines:
-        print("   ", l)
-    n = sum(1 for l in lines if not l.lower().startswith(("username", "---", "no ")))
-    return n
+    print(f"=== Аккаунты TikTok в пуле: активных {len(active)}, неактивных {len(inactive)}")
+    for a in active:
+        print("    ", getattr(a, "username", a))
+    return len(active)
 
 
 # ------------------------------------------------------------------ сбор одной школы
@@ -287,7 +293,7 @@ def main():
     ap.add_argument("--only", default="", help="только эти школы из плана, через запятую")
     ap.add_argument("--one", default="", help="(служебное) одна школа из плана, в дочернем процессе")
     ap.add_argument("--max-posts", type=int, default=MAX_POSTS)
-    ap.add_argument("--parallel", type=int, default=PARALLEL, help="школ одновременно (<= аккаунтов в пуле)")
+    ap.add_argument("--parallel", type=int, default=PARALLEL, help="школ одновременно (<= аккаунтов в пуле); 0 = по числу аккаунтов")
     ap.add_argument("--redo", action="store_true", help="заново пройти и уже готовые школы")
     ap.add_argument("--school", default="", help="режим одной школы без плана (с --queries/--hashtags)")
     ap.add_argument("--queries", default=QUERIES_FILE)
@@ -341,7 +347,9 @@ def main():
     print(f"План: {len(plan)} школ; к обработке {len(todo)}" + (f"; уже готовы (пропуск): {', '.join(skipped)}" if skipped else ""))
     print("Лимит постов на школу:", a.max_posts or "нет", "| результатов на запрос:", a.search_count, "| комментариев на пост:", a.comments)
     if not a.final_only:
-        n_acc = show_accounts()
+        n_acc = show_accounts(reset_locks=True)
+        if a.parallel <= 0:                       # --parallel 0 = по числу аккаунтов
+            a.parallel = max(1, n_acc)
         if a.parallel > 1 and n_acc and a.parallel > n_acc:
             print(f"ВНИМАНИЕ: --parallel {a.parallel} больше, чем аккаунтов в пуле ({n_acc}); ставлю {n_acc}")
             a.parallel = max(1, n_acc)
