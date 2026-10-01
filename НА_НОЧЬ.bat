@@ -26,6 +26,7 @@ if %errorlevel%==0 (
   copy /y "%DIR%\teamproject-main\requirements.txt" . >nul
   copy /y "%DIR%\teamproject-main\schools.txt" . >nul
   if not exist schools_plan.txt copy /y "%DIR%\teamproject-main\schools_plan.txt" . >nul
+  for %%f in ("%DIR%\teamproject-main\plan_*.txt") do if not exist "%%~nxf" copy /y "%%f" . >nul
   echo ^>^>^> Код обновлён.
 ) else (
   echo ^>^>^> GitHub недоступен ^(нет сети / VPN^) — работаю с тем кодом, что есть в папке.
