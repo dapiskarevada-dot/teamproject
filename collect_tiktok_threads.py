@@ -178,6 +178,120 @@ async def wait_for_comments(page, min_wait: float, max_wait: float, poll: float 
         last = await page_snapshot(page)
 
 
+async def dismiss_cookie_banner(page):
+    """Decline optional cookies in TikTok's shadow-DOM banner, or remove it."""
+    try:
+        return await page.evaluate(
+            r"""(() => {
+              const b = document.querySelector('tiktok-cookie-banner');
+              if (!b) return 'absent';
+              const root = b.shadowRoot || b;
+              const btns = Array.from(root.querySelectorAll('button'));
+              const pick = btns.find(x => /decline|отклон|reject|only necessary|refuse/i.test(x.textContent || ''))
+                        || btns.find(x => /allow|accept|прин/i.test(x.textContent || ''));
+              if (pick) { pick.click(); return 'clicked:' + (pick.textContent || '').trim().slice(0, 40); }
+              b.remove(); return 'removed';
+            })()"""
+        )
+    except Exception as exc:
+        return f"error:{type(exc).__name__}"
+
+
+REPLY_ENDPOINT = "https://www.tiktok.com/api/comment/list/reply/"
+
+
+async def dump_dom_debug(page, debug_dir, tag):
+    """Save a screenshot + a list of data-e2e elements and reply-like texts."""
+    if debug_dir is None:
+        return
+    try:
+        debug_dir = Path(debug_dir)
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        run = stamp()
+        await page.screenshot(path=str(debug_dir / f"debug_{tag}_{run}.png"), full_page=False)
+        info = await page.evaluate(
+            r"""(() => {
+              const e2e = Array.from(document.querySelectorAll('[data-e2e]')).map(e => ({
+                e2e: e.getAttribute('data-e2e'), tag: e.tagName, text: (e.textContent || '').trim().slice(0, 60)}));
+              const seen = {}; e2e.forEach(x => { seen[x.e2e] = (seen[x.e2e] || 0) + 1; });
+              const texts = Array.from(document.querySelectorAll('p, span, button, div'))
+                .map(e => ({tag: e.tagName, cls: (e.className || '').toString().slice(0, 80),
+                            e2e: e.getAttribute('data-e2e'), text: (e.textContent || '').trim().slice(0, 60),
+                            kids: e.children.length}))
+                .filter(x => x.text && x.text.length <= 60 && x.kids <= 2 && /(repl|ответ)/i.test(x.text));
+              return {url: location.href, e2e_counts: seen, reply_like: texts.slice(0, 40)};
+            })()"""
+        )
+        json_dump(debug_dir / f"debug_{tag}_{run}.json", info)
+        print("DOM debug saved to", debug_dir)
+    except Exception as exc:
+        print("DOM debug failed:", type(exc).__name__, exc)
+
+
+async def prime_reply_template(post, wait_seconds: float = 4.0, debug_dir=None):
+    """
+    PyTok's signed make_request() needs a param template captured from a
+    request the webapp itself issued for api/comment/list/reply. Click one
+    'View N replies' control in the open comment panel so that happens.
+    """
+    api = getattr(post.parent, "tiktok_api", None)
+    if api is None:
+        return "no_api"
+    try:
+        if api.get_cached_api_params(REPLY_ENDPOINT) is not None:
+            return "cached"
+    except Exception:
+        pass
+
+    page = post.parent._page
+    try:
+        clicked = await page.evaluate(
+            r"""(() => {
+              // TikTok web (2026): "View N replies" is a <button class="TUXButton ...">
+              // inside div[class*="DivViewRepliesContainer"]. Click the BUTTON itself.
+              const rx = /^(view|посмотреть|показать|see)\b.*(repl|ответ|\d)/i;
+              let cands = Array.from(document.querySelectorAll('[class*="DivViewRepliesContainer"] button, [class*="ViewReplies"] button, [data-e2e^="view-more"]'))
+                .filter(e => rx.test((e.textContent || '').trim()));
+              if (!cands.length) {
+                cands = Array.from(document.querySelectorAll('button, [role="button"], p, span'))
+                  .filter(e => { const t = (e.textContent || '').trim(); return t && t.length <= 60 && e.children.length <= 2 && rx.test(t); });
+              }
+              if (!cands.length) return {n: 0};
+              const el = cands[0];
+              el.scrollIntoView({block: 'center'});
+              el.click();
+              return {n: cands.length, tag: el.tagName, e2e: el.getAttribute('data-e2e'),
+                      cls: (el.className || '').toString().slice(0, 60), text: (el.textContent || '').trim().slice(0, 60)};
+            })()"""
+        )
+    except Exception as exc:
+        return f"error:{type(exc).__name__}"
+    print("   view-more candidate:", clicked)
+    if not clicked or not clicked.get("n"):
+        await dump_dom_debug(page, debug_dir, "no_view_more")
+        return "no_view_more_control"
+    await asyncio.sleep(wait_seconds)
+    try:
+        if api.get_cached_api_params(REPLY_ENDPOINT) is not None:
+            return "captured"
+        await dump_dom_debug(page, debug_dir, "clicked_not_captured")
+        return "clicked_not_captured"
+    except Exception:
+        return "clicked"
+
+
+async def fetch_replies_signed_then_legacy(post, root, batch_size):
+    """Signed API route first (reliable), legacy cached-URL route as fallback."""
+    declared = int(root.get("reply_comment_total") or 0)
+    if hasattr(post, "_get_comment_replies_api"):
+        try:
+            await post._get_comment_replies_api(root, batch_size)
+        except Exception as exc:
+            print(f"   signed reply route failed: {type(exc).__name__}: {str(exc)[:120]}")
+    if len(root.get("reply_comment") or []) < declared:
+        await post._get_comment_replies(root, batch_size)
+
+
 async def ensure_comment_panel(post, args):
     await post.view()
     page = post.parent._page
@@ -191,11 +305,32 @@ async def ensure_comment_panel(post, args):
     if int(before.get("level1") or 0) > 0:
         return before
 
-    icon = await page.select('[data-e2e="comment-icon"]', timeout=3)
+    # The TikTok cookie banner (<tiktok-cookie-banner>, shadow DOM) intercepts
+    # pointer events on the action bar; dismiss it (decline optional cookies)
+    # before clicking the comment icon.
+    await dismiss_cookie_banner(page)
+
+    # Current PyTok exposes a plain Playwright Page; use PyTok's own element
+    # finder (same one it uses internally) instead of a page.select() wrapper.
+    icon = await post._find_element_by_selector('[data-e2e="comment-icon"]', timeout=3)
+    if not icon:
+        icon = await page.query_selector('[data-e2e="comment-icon"]')
     if not icon:
         raise RuntimeError("Comment icon not found")
 
-    await icon.mouse_click()
+    try:
+        await icon.click(timeout=3000)
+    except Exception as exc:
+        print("Normal click blocked, retrying with force:", type(exc).__name__)
+        await dismiss_cookie_banner(page)
+        try:
+            await icon.click(timeout=3000, force=True)
+        except Exception as exc2:
+            print("Force click blocked too, using JS click:", type(exc2).__name__)
+            await page.evaluate(
+                r"""(() => { const e = document.querySelector('[data-e2e="comment-icon"]');
+                             if (!e) return false; e.scrollIntoView({block:'center'}); e.click(); return true; })()"""
+            )
     print(
         f"Clicked comment icon once; waiting at least {args.min_wait:g}s, "
         f"up to {args.max_wait:g}s"
@@ -211,6 +346,7 @@ async def ensure_comment_panel(post, args):
     print("After comment panel:", after)
 
     if int(after.get("level1") or 0) == 0:
+        await dump_dom_debug(page, getattr(args, "debug_dir", None), "no_panel")
         raise RuntimeError(
             f"No top-level comment nodes became visible within {args.max_wait:g}s"
         )
@@ -294,13 +430,16 @@ async def collect_roots_strict(post, count: int, batch_size: int):
     }
 
 
-async def fetch_replies_for_roots(post, roots, batch_size: int, root_delay: float):
+async def fetch_replies_for_roots(post, roots, batch_size: int, root_delay: float, debug_dir=None):
     """
     Fetch replies ONLY for roots that will actually be saved.
     """
     diagnostics = {}
     reply_records = []
     seen_reply_ids = set()
+
+    if any(int(r.get("reply_comment_total") or 0) > len(r.get("reply_comment") or []) for r in roots):
+        print("Reply template priming:", await prime_reply_template(post, debug_dir=debug_dir))
 
     for i, root in enumerate(roots, start=1):
         cid = comment_id(root)
@@ -321,7 +460,7 @@ async def fetch_replies_for_roots(post, roots, batch_size: int, root_delay: floa
             continue
 
         try:
-            await post._get_comment_replies(root, batch_size)
+            await fetch_replies_signed_then_legacy(post, root, batch_size)
         except Exception as exc:
             diag["status"] = "error"
             diag["error"] = f"{type(exc).__name__}: {exc}"
@@ -435,7 +574,7 @@ async def collect_one(api, url: str, args):
                 page = self.parent._page
                 if "/photo/" not in page.url or post_id not in page.url:
                     print("Opening photo URL:", canonical_url)
-                    await page.get(canonical_url)
+                    await self.parent.navigate(canonical_url, wait_until="domcontentloaded")
                     await asyncio.sleep(5)
                 if "/photo/" not in page.url or post_id not in page.url:
                     raise RuntimeError("Browser did not remain on requested /photo/ post")
@@ -443,6 +582,7 @@ async def collect_one(api, url: str, args):
 
             post.view = MethodType(photo_view, post)
 
+        args.debug_dir = post_dir
         await ensure_comment_panel(post, args)
 
         roots, root_diag = await collect_roots_strict(
@@ -474,6 +614,7 @@ async def collect_one(api, url: str, args):
             roots,
             batch_size=args.batch_size,
             root_delay=args.reply_root_delay,
+            debug_dir=post_dir,
         )
 
         with replies_path.open("x", encoding="utf-8") as sink:
