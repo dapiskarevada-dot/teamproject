@@ -9,3 +9,4 @@ photo_urls.txt
 openrouter_key.txt
 ocr_benchmark/
 .venv-ocr/
+parallel/
