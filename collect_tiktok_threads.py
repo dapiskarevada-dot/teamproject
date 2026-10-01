@@ -357,6 +357,9 @@ async def ensure_comment_panel(post, args):
 def add_unique_root(roots, seen, comment, limit):
     if not isinstance(comment, dict):
         return False
+    # Safety net: a reply carries reply_id = parent cid; top-level has "0".
+    if str(comment.get("reply_id") or "0") != "0":
+        return False
     key = comment_key(comment)
     if key in seen:
         return False
@@ -581,6 +584,14 @@ async def collect_one(api, url: str, args):
                 print("Browser landed on:", page.url)
 
             post.view = MethodType(photo_view, post)
+
+        # PyTok matches banked responses by substring, and 'api/comment/list'
+        # also matches 'api/comment/list/reply'. Reply responses left over from
+        # the previous post would otherwise be parsed as this post's top-level
+        # comments, so drain the buffer before opening the page.
+        stale = await api.process_pending_responses("api/comment/list")
+        if stale:
+            print(f"Discarded {len(stale)} stale comment/reply responses from previous posts")
 
         args.debug_dir = post_dir
         await ensure_comment_panel(post, args)
