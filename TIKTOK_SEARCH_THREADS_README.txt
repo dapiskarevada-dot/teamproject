@@ -3,8 +3,9 @@ TikTok SEARCH -> POSTS -> COMMENTS -> REPLIES
 Files:
   collect_tiktok_threads.py
   collect_tiktok_search_threads.py
+  tiktok_fields.py            (flat post fields: author account creation date, stats, subtitles)
 
-Keep both files in the same pytok_research directory.
+Keep all three files in the same pytok_research directory.
 
 1) No-network compatibility check:
    python .\collect_tiktok_search_threads.py --check
@@ -20,6 +21,18 @@ Keep both files in the same pytok_research directory.
 
 5) Queries from file:
    python .\collect_tiktok_search_threads.py --queries-file .\queries.txt --search-count 20 --comments 50
+
+6) Search + posts table with subtitles and author profiles (extra requests):
+   python .\collect_tiktok_search_threads.py --query "умскул" --search-count 50 --search-only --subtitles --fetch-author
+
+Posts table:
+  Every search run also writes search_posts_<run>.xlsx and .csv next to the
+  JSON files: post id/type/url, matched queries, author (nick, name, id),
+  AUTHOR ACCOUNT CREATION DATE (derived from author id), bio, author video /
+  follower / like counts, post time, description, hashtags, plays, likes,
+  comments, shares, saves, duration, sound, subtitle languages, subtitle text.
+  --subtitles     download auto-subtitle text (HTTP to TikTok CDN)
+  --fetch-author  request author profile only when search data lacks stats
 
 Defaults:
   request delay: 4 s

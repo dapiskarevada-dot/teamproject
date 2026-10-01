@@ -14,6 +14,10 @@ IMPORTANT
 - Search results are saved BEFORE comment collection.
 - Posts duplicated across queries are collected only once, while matched
   queries/ranks are preserved in the search manifest.
+- Besides the JSON layer, a flat table of unique posts is written
+  (search_posts_<run>.xlsx / .csv) with author account creation date,
+  author stats, post stats, hashtags and (optionally) subtitles.
+  Fields come from tiktok_fields.py (merged from scrapping2.py).
 
 Examples
 --------
@@ -28,6 +32,9 @@ Queries file, one query per line:
 
 Only search, no post/comment collection:
     python .\collect_tiktok_search_threads.py --query "умскул" --search-count 20 --search-only
+
+Search + table with subtitles and author profiles (extra requests):
+    python .\collect_tiktok_search_threads.py --query "умскул" --search-count 50 --search-only --subtitles --fetch-author
 
 Interface check only, no TikTok request:
     python .\collect_tiktok_search_threads.py --check
@@ -48,6 +55,13 @@ from collect_tiktok_threads import (
     json_dump,
     stamp,
     utc_now,
+)
+from tiktok_fields import (
+    author_fields_missing,
+    download_subtitles,
+    fill_author_from_profile,
+    flatten_post,
+    rows_to_table,
 )
 
 DEFAULT_CASE_DIR = Path("cases") / "tiktok_search_threads"
@@ -178,6 +192,12 @@ def build_search_record(video, query, rank):
         f"https://www.tiktok.com/@{username}/{post_type}/{post_id}"
     )
 
+    fields = flatten_post(data, post_type=post_type)
+    fields["post_id"] = post_id
+    fields["video_url"] = canonical_url
+    if not fields.get("author_username"):
+        fields["author_username"] = username
+
     return {
         "query": query,
         "query_rank": rank,
@@ -186,6 +206,7 @@ def build_search_record(video, query, rank):
         "post_type_inferred": post_type,
         "canonical_url": canonical_url,
         "search_observed_at_utc": utc_now(),
+        "fields": fields,
         "raw_search_item": safe_json(data),
     }
 
@@ -229,6 +250,15 @@ def check_local_api():
         print("Thread collector:", inspect.getfile(threads))
     except Exception as exc:
         print("STOP: cannot import collect_tiktok_threads.py:", exc)
+        return 2
+
+    try:
+        import tiktok_fields as fields
+        print("Fields module:", inspect.getfile(fields))
+        print("Account date from id 7000000000000000000:",
+              fields.account_created_from_id(7000000000000000000) or "(old id)")
+    except Exception as exc:
+        print("STOP: cannot import tiktok_fields.py:", exc)
         return 2
 
     print("Compatible local modules found. No TikTok request was made.")
@@ -295,6 +325,7 @@ def merge_search_records(all_records):
                 "post_type_inferred": rec["post_type_inferred"],
                 "canonical_url": rec["canonical_url"],
                 "matched_queries": [],
+                "fields": dict(rec.get("fields") or {}),
                 "raw_search_item": rec["raw_search_item"],
             }
             order.append(post_id)
@@ -312,8 +343,50 @@ def merge_search_records(all_records):
             item["canonical_url"] = (
                 f"https://www.tiktok.com/@{item['username']}/photo/{post_id}"
             )
+            item["fields"]["post_type"] = "photo"
+            item["fields"]["video_url"] = item["canonical_url"]
+
+    for item in merged.values():
+        item["fields"]["matched_queries"] = [
+            f"{m['query']} (#{m['query_rank']})" for m in item["matched_queries"]
+        ]
 
     return [merged[pid] for pid in order]
+
+
+async def enrich_posts_table(api, unique_posts, args):
+    """
+    Fill the flat table: subtitles (CDN download) and, if requested,
+    missing author stats via api.user(username).info() with a cache.
+    Both are optional and off by default to keep the search stage request-free.
+    """
+    author_cache = {}
+
+    for i, item in enumerate(unique_posts, start=1):
+        row = item["fields"]
+
+        if args.subtitles:
+            raw = item.get("raw_search_item") or {}
+            row["subtitle_text"] = await asyncio.to_thread(download_subtitles, raw)
+
+        if args.fetch_author and author_fields_missing(row) and row.get("author_username"):
+            username = row["author_username"]
+            if username not in author_cache:
+                try:
+                    author_cache[username] = await api.user(username=username).info()
+                except Exception as exc:
+                    print(f"  author @{username}: profile request failed: "
+                          f"{type(exc).__name__}: {exc}")
+                    author_cache[username] = {}
+                if args.request_delay > 0:
+                    await asyncio.sleep(args.request_delay)
+            fill_author_from_profile(row, author_cache[username])
+
+        if args.subtitles or args.fetch_author:
+            print(f"table {i}/{len(unique_posts)}: {row.get('post_id')} "
+                  f"@{row.get('author_username')} "
+                  f"created={row.get('author_created') or '?'} "
+                  f"subs={'yes' if row.get('subtitle_text') else 'no'}")
 
 
 async def main_async(args):
@@ -398,6 +471,29 @@ async def main_async(args):
         print("Unique posts after dedup:", len(unique_posts))
         print("SEARCH RAW:", raw_path)
         print("SEARCH DEDUP:", dedup_path)
+
+        # Flat table layer (account creation date, author/post stats, subtitles).
+        await enrich_posts_table(api, unique_posts, args)
+        table_paths = rows_to_table(
+            [p["fields"] for p in unique_posts],
+            search_dir / f"search_posts_{run_id}",
+        )
+        # Re-save dedup JSON so it carries the enriched fields too.
+        json_dump(dedup_path, {
+            "created_at_utc": utc_now(),
+            "queries": queries,
+            "requested_per_query": args.search_count,
+            "raw_result_count": len(all_records),
+            "unique_post_count": len(unique_posts),
+            "posts": unique_posts,
+            "note": (
+                "TikTok/PyTok search retrieval is a retrieval mechanism, not "
+                "an exhaustive or random sample. Duplicates across queries are "
+                "deduplicated by stable post_id."
+            ),
+        })
+        for p in table_paths:
+            print("SEARCH TABLE:", p)
 
         if args.search_only:
             json_dump(batch_path, {
@@ -498,6 +594,16 @@ def main():
         "--search-only",
         action="store_true",
         help="Save search results only; do not open posts or collect comments.",
+    )
+    parser.add_argument(
+        "--subtitles",
+        action="store_true",
+        help="Download TikTok auto-subtitles text into the posts table (HTTP to CDN).",
+    )
+    parser.add_argument(
+        "--fetch-author",
+        action="store_true",
+        help="If author stats are missing in search data, request the author profile.",
     )
     parser.add_argument(
         "--case-dir",
