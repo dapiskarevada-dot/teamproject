@@ -29,7 +29,8 @@
 | `1c_whisper_setup.command` | Один раз: faster-whisper |
 | `2_login.command` | Добавить аккаунты TikTok (несколько подряд, логин в браузере вручную) |
 | **`НА_НОЧЬ.command`** | **Mac: обновить код → поставить окружение → (добавить аккаунты) → все школы параллельно, Mac не уснёт** |
-| **`НА_НОЧЬ.bat`** | **Windows: то же самое одним двойным кликом** (нужен Python 3.11+ с python.org, галочка «Add Python to PATH») |
+| **`NIGHT.bat`** / **`NIGHT_GENERAL.bat`** | **Windows: то же самое одним двойным кликом** — по плану школ / по общим запросам ЕГЭ (`plan_general_ege.txt`). Нужен Python 3.11+ с python.org, галочка «Add Python to PATH» |
+| `НА_НОЧЬ_ОБЩИЕ.command` | Mac: ночной прогон по общим запросам ЕГЭ (`plan_general_ege.txt`) |
 | `RUN.command` | То же без добавления аккаунтов: `./RUN.command`, `./RUN.command --test`, `./RUN.command --only Умскул` |
 | `0_update_from_github.command` | Подтянуть свежий код из GitHub |
 | `0_unlock_account.command` | Снять блокировки аккаунтов после оборванного запуска |
