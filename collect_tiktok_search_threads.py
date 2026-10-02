@@ -592,7 +592,10 @@ def apply_window(unique_posts, args):
         return unique_posts
     lo = (args.since or "0000-01-01") + " 00:00:00"
     hi = (args.until or "9999-12-31") + " 23:59:59"
-    kept = [p for p in unique_posts if lo <= str((p.get("fields") or {}).get("create_time") or "") <= hi]
+    def ok(p):
+        t = str((p.get("fields") or {}).get("create_time") or "")
+        return (not t) or (lo <= t <= hi)      # без даты — оставляем (дата неизвестна, не доказано, что вне окна)
+    kept = [p for p in unique_posts if ok(p)]
     print(f"Date window {args.since or '...'} .. {args.until or '...'}: keeping {len(kept)} of {len(unique_posts)} posts")
     return kept
 
