@@ -12,3 +12,6 @@ parallel/
 diag_photo.py
 cookies.txt
 pipeline_state.json
+ИТОГ_*.xlsx
+night_*.log
+pipeline_*.log
