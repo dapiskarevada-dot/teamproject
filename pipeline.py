@@ -50,7 +50,11 @@ if sys.platform.startswith("win"):
 
 # ============================ НАСТРОЙКИ ПО УМОЛЧАНИЮ ============================
 PLAN_FILE = "schools_plan.txt"    # школы + их запросы и хэштеги, по строке на школу (порядок = очередь)
-MAX_POSTS = 500                   # лимит постов на школу (слайды, видео, Whisper, комментарии); 0 = без лимита
+MAX_POSTS = 0                     # лимит постов на школу для тяжёлых шагов; 0 = без лимита (объём задаёт окно по дате)
+SINCE = "2025-10-01"              # окно по дате публикации (UTC), включительно; "" = без ограничения
+UNTIL = "2026-10-01"
+AUTHORS_MIN_POSTS = 2             # ленты авторов, у которых >= N постов о школе (амбассадоры, кураторы); 0 = выкл
+AUTHOR_COUNT = 200                # постов читать из ленты автора
 SEARCH_COUNT = 200                # результатов на запрос/хэштег (потолок TikTok ~200)
 COMMENTS = 200                    # комментариев верхнего уровня на пост (+ все реплаи к ним)
 WHISPER = "missing"               # missing | all | off  (off = без расшифровки речи; python transcribe_whisper.py — отдельно)
@@ -86,9 +90,10 @@ def load_plan(path: Path):
         name = parts[0]
         queries = [q.strip() for q in (parts[1] if len(parts) > 1 else "").split(";") if q.strip()]
         hashtags = [h.strip().lstrip("#") for h in (parts[2] if len(parts) > 2 else "").split(";") if h.strip()]
+        authors = [x.strip().lstrip("@") for x in (parts[3] if len(parts) > 3 else "").split(";") if x.strip()]
         if not queries and not hashtags:
             queries = [name.split(",")[0].strip()]
-        plan.append({"name": name, "aliases": name, "queries": queries, "hashtags": hashtags})
+        plan.append({"name": name, "aliases": name, "queries": queries, "hashtags": hashtags, "authors": authors})
     return plan
 
 
@@ -151,7 +156,14 @@ def run_collect(a, school):
            "--search-count", str(a.search_count), "--comments", str(a.comments),
            "--max-posts", str(a.max_posts), "--prefer", school["aliases"], "--skip-collected",
            "--whisper", a.whisper, "--whisper-model", a.whisper_model, "--ocr-model", a.ocr_model,
-           "--case-dir", str(case_dir)]
+           "--case-dir", str(case_dir),
+           "--authors-min-posts", str(a.authors_min_posts), "--author-count", str(a.author_count)]
+    if a.since:
+        cmd += ["--since", a.since]
+    if a.until:
+        cmd += ["--until", a.until]
+    for u in school.get("authors") or []:
+        cmd += ["--author", u]
     for q in school["queries"]:
         cmd += ["--query", q]
     for h in school["hashtags"]:
@@ -226,8 +238,44 @@ def build_final_workbook(school_name: str, case_dir: Path):
         dfp.to_excel(w, sheet_name="Посты", index=False)
         (dfc if not dfc.empty else pd.DataFrame({"ID поста": []})).to_excel(w, sheet_name="Комментарии и реплаи", index=False)
         summary.to_excel(w, sheet_name="Сводка", index=False)
+        cov = load_coverage(case_dir)
+        if cov:
+            coverage_frames(cov, short)[0].to_excel(w, sheet_name="Покрытие", index=False)
     print(f"\nИТОГ [{short}]: {out}"); print(summary.to_string(index=False))
     return out, dfp, dfc, summary
+
+
+def load_coverage(case_dir: Path):
+    """Отчёт о покрытии из последнего прогона (search_posts_*.json -> coverage)."""
+    files = sorted(glob.glob(str(case_dir / "search" / "search_posts_*.json")), key=os.path.getmtime)
+    for f in reversed(files):
+        try:
+            d = json.load(open(f, encoding="utf-8"))
+        except Exception:
+            continue
+        if d.get("coverage"):
+            d["coverage"]["window"] = d.get("window"); d["coverage"]["run"] = Path(f).name
+            return d["coverage"]
+    return None
+
+
+def coverage_frames(cov, short):
+    """(лист «Покрытие» для школы, строка для общей сводки)."""
+    import pandas as pd
+    rows = [{"Канал": r["channel"], "Тип": r["type"], "Улов": r["caught"], "Новых": r["new"], "Новых, % от накопленного": r["new_pct"]}
+            for r in cov.get("channels", [])]
+    w = cov.get("window") or {}
+    rows += [{}, {"Канал": "Найдено уникальных (в окне)", "Улов": cov.get("found")},
+             {"Канал": "Поиск / хэштеги / в обоих", "Улов": f"{cov.get('search')} / {cov.get('hashtags')} / {cov.get('both')}"},
+             {"Канал": "Ленты авторов дали", "Улов": cov.get("authors")},
+             {"Канал": "Оценка всего видимого (N ≈ n1·n2/m)", "Улов": cov.get("estimate")},
+             {"Канал": "Покрытие, %", "Улов": cov.get("coverage_pct")},
+             {"Канал": "Последний канал добавил, %", "Улов": cov.get("last_channel_new_pct")},
+             {"Канал": "Окно", "Улов": f"{w.get('since') or '…'} — {w.get('until') or '…'}"},
+             {"Канал": "Вердикт", "Улов": cov.get("verdict")}]
+    line = {"Школа": short, "Найдено": cov.get("found"), "Оценка всего": cov.get("estimate"), "Покрытие, %": cov.get("coverage_pct"),
+            "Последний канал, % нового": cov.get("last_channel_new_pct"), "Каналов": len(cov.get("channels", [])), "Вердикт": cov.get("verdict")}
+    return pd.DataFrame(rows), line
 
 
 def build_all_schools_workbook(results):
@@ -250,6 +298,15 @@ def build_all_schools_workbook(results):
         posts.to_excel(w, sheet_name="Посты", index=False)
         comments.to_excel(w, sheet_name="Комментарии и реплаи", index=False)
         pd.DataFrame(sv).to_excel(w, sheet_name="Сводка по школам", index=False)
+        cv = []
+        for r in parts:
+            short = r[1]["Школа (план)"].iloc[0]
+            cov = load_coverage(CASES_ROOT / slug(short))
+            if cov:
+                cv.append(coverage_frames(cov, short)[1])
+        if cv:
+            pd.DataFrame(cv).to_excel(w, sheet_name="Покрытие", index=False)
+            print("\nПОКРЫТИЕ:"); print(pd.DataFrame(cv).to_string(index=False))
     print("\nОБЩИЙ ИТОГ:", out); print(pd.DataFrame(sv).to_string(index=False))
     return out
 
@@ -286,7 +343,8 @@ def child_args(a, school_name):
     """Аргументы для дочернего процесса одной школы (при --parallel)."""
     cmd = [sys.executable, "-u", __file__, "--one", school_name, "--plan", a.plan,
            "--max-posts", str(a.max_posts), "--search-count", str(a.search_count), "--comments", str(a.comments),
-           "--whisper", a.whisper, "--whisper-model", a.whisper_model, "--ocr-model", a.ocr_model]
+           "--whisper", a.whisper, "--whisper-model", a.whisper_model, "--ocr-model", a.ocr_model,
+           "--since", a.since, "--until", a.until, "--authors-min-posts", str(a.authors_min_posts), "--author-count", str(a.author_count)]
     for flag in ("search_only", "no_images", "no_ocr", "no_videos", "final_only", "redo"):
         if getattr(a, flag):
             cmd.append("--" + flag.replace("_", "-"))
@@ -350,6 +408,10 @@ def main():
     ap.add_argument("--only", default="", help="только эти школы из плана, через запятую")
     ap.add_argument("--one", default="", help="(служебное) одна школа из плана, в дочернем процессе")
     ap.add_argument("--max-posts", type=int, default=MAX_POSTS)
+    ap.add_argument("--since", default=SINCE, help="окно по дате публикации: с YYYY-MM-DD ('' = без)")
+    ap.add_argument("--until", default=UNTIL, help="окно по дате публикации: по YYYY-MM-DD ('' = без)")
+    ap.add_argument("--authors-min-posts", type=int, default=AUTHORS_MIN_POSTS)
+    ap.add_argument("--author-count", type=int, default=AUTHOR_COUNT)
     ap.add_argument("--parallel", type=int, default=PARALLEL, help="школ одновременно (<= аккаунтов в пуле); 0 = по числу аккаунтов")
     ap.add_argument("--redo", action="store_true", help="заново пройти и уже готовые школы")
     ap.add_argument("--school", default="", help="режим одной школы без плана (с --queries/--hashtags)")

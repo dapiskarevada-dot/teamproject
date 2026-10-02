@@ -575,6 +575,105 @@ async def enrich_posts_table(api, unique_posts, args):
                   f"subs={'yes' if row.get('subtitle_text') else 'no'}")
 
 
+def mentions_aliases(fields: dict, aliases) -> bool:
+    if not aliases:
+        return True
+    blob = " ".join(str(fields.get(k) or "") for k in ("description", "hashtags", "author_username", "author_nickname", "author_bio")).lower()
+    return any(a in blob for a in aliases)
+
+
+def parse_aliases(s: str):
+    return [a.strip().lower() for a in (s or "").split(",") if a.strip()]
+
+
+def apply_window(unique_posts, args):
+    """--since / --until (YYYY-MM-DD): keep posts whose create_time is inside the window."""
+    if not (args.since or args.until):
+        return unique_posts
+    lo = (args.since or "0000-01-01") + " 00:00:00"
+    hi = (args.until or "9999-12-31") + " 23:59:59"
+    kept = [p for p in unique_posts if lo <= str((p.get("fields") or {}).get("create_time") or "") <= hi]
+    print(f"Date window {args.since or '...'} .. {args.until or '...'}: keeping {len(kept)} of {len(unique_posts)} posts")
+    return kept
+
+
+async def run_author_feed(api, username, count, aliases):
+    """All posts of one author (channel '@username'); only those mentioning the school aliases are kept."""
+    records, rank, kept = [], 0, 0
+    print("\n" + "=" * 76)
+    print("AUTHOR FEED:", "@" + username, "| requested:", count)
+    print("=" * 76)
+    try:
+        async for video in api.user(username=username).videos(count=count):
+            rank += 1
+            try:
+                record = build_search_record(video, "@" + username, rank)
+            except Exception as exc:
+                print(f"author item {rank}: skipped — {type(exc).__name__}: {exc}")
+                continue
+            if mentions_aliases(record.get("fields") or {}, aliases):
+                records.append(record); kept += 1
+            if rank >= count:
+                break
+    except Exception as exc:
+        print(f"AUTHOR STOP @{username}; no automatic retry: {type(exc).__name__}: {exc}")
+    print(f"Author @{username}: {rank} posts seen, {kept} mention the school")
+    return records
+
+
+def pick_authors(unique_posts, args):
+    """Authors with >= --authors-min-posts posts mentioning the school, plus --author list."""
+    aliases = parse_aliases(args.prefer)
+    counts = {}
+    for p in unique_posts:
+        f = p.get("fields") or {}
+        u = (f.get("author_username") or "").strip().lstrip("@")
+        if u and mentions_aliases(f, aliases):
+            counts[u] = counts.get(u, 0) + 1
+    chosen = [u for u, n in sorted(counts.items(), key=lambda x: -x[1]) if n >= args.authors_min_posts] if args.authors_min_posts else []
+    for u in args.author or []:
+        u = u.strip().lstrip("@")
+        if u and u not in chosen:
+            chosen.insert(0, u)
+    if args.max_authors:
+        chosen = chosen[: args.max_authors]
+    return chosen, counts
+
+
+def coverage_report(all_records, kept_ids):
+    """Per-channel catch / new-in-order, and a Lincoln-Petersen estimate of the total from
+    the overlap of independent channel groups (search queries vs hashtag feeds vs author feeds)."""
+    order, by_channel = [], {}
+    for r in all_records:
+        if str(r["post_id"]) not in kept_ids:
+            continue
+        q = r["query"]
+        if q not in by_channel:
+            by_channel[q] = []; order.append(q)
+        by_channel[q].append(str(r["post_id"]))
+    seen, rows = set(), []
+    for q in order:
+        ids = set(by_channel[q]); new = ids - seen; seen |= ids
+        rows.append({"channel": q, "type": "хэштег" if q.startswith("#") else ("автор" if q.startswith("@") else "поиск"),
+                     "caught": len(ids), "new": len(new), "new_pct": round(100 * len(new) / max(1, len(seen)), 1)})
+    groups = {"поиск": set(), "хэштег": set(), "автор": set()}
+    for q, ids in by_channel.items():
+        groups["хэштег" if q.startswith("#") else ("автор" if q.startswith("@") else "поиск")] |= set(ids)
+    total_found = len(seen)
+    est = None
+    n1, n2, m = len(groups["поиск"]), len(groups["хэштег"]), len(groups["поиск"] & groups["хэштег"])
+    if m:
+        est = round(n1 * n2 / m)
+    last_new_pct = rows[-1]["new_pct"] if rows else None
+    coverage_pct = round(100 * total_found / est, 1) if est and est >= total_found else (100.0 if est else None)
+    verdict = "ок" if (coverage_pct is not None and coverage_pct >= 90 and (last_new_pct is None or last_new_pct < 5)) else "добавить запросы"
+    rep = {"channels": rows, "found": total_found, "search": n1, "hashtags": n2, "both": m, "authors": len(groups["автор"]),
+           "estimate": est, "coverage_pct": coverage_pct, "last_channel_new_pct": last_new_pct, "verdict": verdict}
+    print("\nCOVERAGE: found", total_found, "| search", n1, "| hashtags", n2, "| both", m, "| authors", len(groups["автор"]),
+          "| estimate", est, "| coverage", coverage_pct, "% | last channel new", last_new_pct, "% ->", verdict)
+    return rep
+
+
 def already_collected(case_dir: Path, post_id: str) -> bool:
     """True if a successful comments run for this post already exists in case_dir."""
     d = case_dir / "raw" / "posts" / str(post_id)
@@ -679,9 +778,25 @@ async def main_async(args):
                     json.dumps(rec, ensure_ascii=False, default=str) + "\n"
                 )
 
-        unique_posts = merge_search_records(all_records)
+        unique_posts = apply_window(merge_search_records(all_records), args)
+
+        # Author feeds: official accounts + authors with several posts about the school.
+        authors, author_counts = pick_authors(unique_posts, args)
+        if authors:
+            print(f"\nAuthor feeds: {len(authors)} accounts ({', '.join('@' + a for a in authors[:12])}{'...' if len(authors) > 12 else ''})")
+            aliases = parse_aliases(args.prefer)
+            for ai, u in enumerate(authors):
+                all_records.extend(await run_author_feed(api, u, args.author_count, aliases))
+                if ai < len(authors) - 1 and args.between_queries_delay > 0:
+                    await asyncio.sleep(args.between_queries_delay)
+            unique_posts = apply_window(merge_search_records(all_records), args)
+
+        coverage = coverage_report(all_records, {str(p["post_id"]) for p in unique_posts})
         unique_posts = apply_post_limit(unique_posts, args)
         json_dump(dedup_path, {
+            "coverage": coverage,
+            "window": {"since": args.since, "until": args.until},
+            "authors": authors,
             "created_at_utc": utc_now(),
             "queries": queries + ["#" + t for t in hashtags],
             "requested_per_query": args.search_count,
@@ -712,6 +827,9 @@ async def main_async(args):
         )
         # Re-save dedup JSON so it carries the enriched fields too.
         json_dump(dedup_path, {
+            "coverage": coverage,
+            "window": {"since": args.since, "until": args.until},
+            "authors": authors,
             "created_at_utc": utc_now(),
             "queries": queries + ["#" + t for t in hashtags],
             "requested_per_query": args.search_count,
@@ -849,6 +967,13 @@ def main():
         default="",
         help="Comma-separated school aliases; posts mentioning them are processed first (used with --max-posts).",
     )
+    parser.add_argument("--since", default="", help="Keep only posts created on/after YYYY-MM-DD (UTC).")
+    parser.add_argument("--until", default="", help="Keep only posts created on/before YYYY-MM-DD (UTC).")
+    parser.add_argument("--author", action="append", help="Author feed to add (official account). Repeat for several.")
+    parser.add_argument("--authors-min-posts", type=int, default=0,
+                        help="Also pull feeds of authors with at least N posts mentioning --prefer aliases (0 = off).")
+    parser.add_argument("--author-count", type=int, default=200, help="Posts to read per author feed.")
+    parser.add_argument("--max-authors", type=int, default=40, help="Cap on author feeds per run.")
     parser.add_argument(
         "--skip-collected",
         action="store_true",
