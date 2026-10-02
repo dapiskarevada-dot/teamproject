@@ -16,6 +16,13 @@ rem  Plan file: schools_plan.txt by default; NIGHT_GENERAL.bat uses plan_general
 rem =====================================================================
 set PLAN=schools_plan.txt
 if not "%~1"=="" set PLAN=%~1
+set EXTRA=
+:more
+shift
+if "%~1"=="" goto done
+set EXTRA=%EXTRA% %1
+goto more
+:done
 
 echo =================== STEP 0. UPDATE CODE FROM GITHUB ===================
 set ZIP=%TEMP%\teamproject_main.zip
@@ -84,7 +91,7 @@ echo   schools from %PLAN%, up to 500 posts per school, threads = accounts in th
 echo   logs: night_DATE.log (overall) and pipeline_SCHOOL.log (per school).
 echo   The PC will not sleep. Minimize this window, do NOT close it.
 echo.
-python -u pipeline.py --parallel 0 --log --plan "%PLAN%"
+python -u pipeline.py --parallel 0 --log --plan "%PLAN%"%EXTRA%
 echo.
 echo =================== DONE ===================
 echo   results: ITOG_SCHOOL.xlsx per school and ITOG_ALL.xlsx in this folder. State: pipeline_state.json
