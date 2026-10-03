@@ -250,8 +250,44 @@ def write_table(result: dict, root: Path):
     return root / "transcripts.xlsx"
 
 
+def sample_ids(cases_root: Path = Path("cases")):
+    """ID постов из выборок всех школ (cases/<школа>/sample_ids.txt); пусто = все видео."""
+    ids = set()
+    for f in cases_root.glob("*/sample_ids.txt"):
+        ids |= {l.strip() for l in f.read_text(encoding="utf-8").splitlines() if l.strip()}
+    return ids
+
+
+def watch(root: Path, model_name: str, stop_file: Path, only_sample=True, interval=45):
+    """Фоновый режим: подхватывать новые video.* по мере скачивания и расшифровывать; выйти, когда
+    появился stop_file и очередь пуста."""
+    print(f"Whisper watch: модель {model_name}, стоп-файл {stop_file}", flush=True)
+    done_total = 0
+    while True:
+        ids = sample_ids() if only_sample else None
+        posts_dir = root / "raw" / "posts"
+        todo = []
+        for d in sorted(posts_dir.glob("*")):
+            if ids and d.name not in ids:
+                continue
+            if find_video(d) and not (d / "transcript.whisper.json").exists():
+                todo.append(d.name)
+        if todo:
+            print(f"Whisper watch: в очереди {len(todo)}", flush=True)
+            transcribe_dir(root, post_ids=set(todo[:200]), model_name=model_name)
+            done_total += len(todo[:200])
+            continue
+        if stop_file.exists():
+            print(f"Whisper watch: очередь пуста, сбор завершён — выход (расшифровано за сеанс {done_total})", flush=True)
+            return 0
+        time.sleep(interval)
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--watch", action="store_true", help="фоновый режим: расшифровывать видео по мере появления")
+    ap.add_argument("--stop-file", type=Path, default=Path("cases") / "whisper_stop.flag")
+    ap.add_argument("--all-videos", action="store_true", help="в режиме watch: не ограничиваться выборками школ")
     ap.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--language", default=DEFAULT_LANGUAGE)
@@ -262,6 +298,9 @@ def main():
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--verbose", action="store_true", help="печатать каждую фразу")
     a = ap.parse_args()
+
+    if a.watch:
+        return watch(a.root, a.model, a.stop_file, only_sample=not a.all_videos)
 
     if a.urls_file:
         import re

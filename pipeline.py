@@ -61,7 +61,7 @@ FRAMES_N = 5                      # кадров на видео
 STALL_MIN = 20                    # сторож: поток без записей в логе дольше N минут считается зависшим и перезапускается
 SEARCH_COUNT = 200                # результатов на запрос/хэштег (потолок TikTok ~200)
 COMMENTS = 200                    # комментариев верхнего уровня на пост (+ все реплаи к ним)
-WHISPER = "missing"               # missing | all | off  (off = без расшифровки речи; python transcribe_whisper.py — отдельно)
+WHISPER = "all"                   # all | missing | off  (в режиме --heavy Whisper идёт фоном параллельно со сбором)
 WHISPER_MODEL = "large-v3"          # полная large; turbo быстрее в ~3 раза, но чуть хуже русский
 OCR_MODEL = "google/gemini-2.5-flash"
 FETCH_AUTHOR = True               # дозапрашивать профиль автора, если в выдаче нет статистики
@@ -715,6 +715,17 @@ def main():
             a.parallel = max(1, n_acc)
 
     rc_all = 0
+    whisper_proc = None
+    if a.heavy and not a.final_only and a.whisper != "off":
+        stop_flag = CASES_ROOT / "whisper_stop.flag"
+        CASES_ROOT.mkdir(exist_ok=True)
+        if stop_flag.exists():
+            stop_flag.unlink()
+        wl = open("whisper_watch.log", "a", encoding="utf-8")
+        whisper_proc = subprocess.Popen([sys.executable, "-u", "transcribe_whisper.py", "--watch", "--model", a.whisper_model,
+                                         "--stop-file", str(stop_flag)] + (["--all-videos"] if a.whisper == "all" and a.sample == 0 else []),
+                                        stdout=wl, stderr=subprocess.STDOUT)
+        print(f"=== Whisper ({a.whisper_model}) запущен фоном, лог whisper_watch.log — расшифровывает видео по мере скачивания", flush=True)
     if not a.final_only:
         keep_awake()
     if a.parallel > 1 and len(todo) > 1 and not a.final_only:
@@ -725,6 +736,11 @@ def main():
             rc_all = rc_all or rc
 
     if a.heavy and not a.final_only:
+        if whisper_proc is not None:
+            (CASES_ROOT / "whisper_stop.flag").write_text("done", encoding="utf-8")
+            print("=== Сбор завершён; жду, пока фоновый Whisper доделает очередь (лог whisper_watch.log)...", flush=True)
+            whisper_proc.wait()
+            a.whisper = "off"          # уже сделано фоном
         run_transcriptions(a, [s for s in plan if not only or s["name"].split(",")[0].strip().lower() in only or s["name"].lower() in only])
 
     # общий итог по всем школам, у которых есть данные (включая готовые ранее)
