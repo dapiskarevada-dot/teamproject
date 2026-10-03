@@ -91,6 +91,7 @@ def main():
     ap.add_argument("--keep-video", action="store_true")
     ap.add_argument("--workers", type=int, default=4, help="параллельных скачиваний")
     ap.add_argument("--frames", type=int, default=5, help="кадров сохранить для текста с экрана (0 = не сохранять)")
+    ap.add_argument("--screen-text", choices=["on", "off"], default="on", help="текст с кадров через API (нужен openrouter_key.txt)")
     a = ap.parse_args()
     if sys.platform.startswith("win"):
         try:
@@ -106,6 +107,28 @@ def main():
         return 0
     tw.pick_engine()
     prompt = tw.build_prompt()
+    ocr_pool, ocr_ctx = None, None
+    if a.screen_text == "on" and a.frames:
+        try:
+            from ocr_vlm import load_key, load_schools, DEFAULT_MODEL, DEFAULT_BASE
+            key = load_key()
+            if key:
+                from concurrent.futures import ThreadPoolExecutor
+                ocr_pool = ThreadPoolExecutor(max_workers=4)
+                ocr_ctx = (DEFAULT_MODEL, DEFAULT_BASE, key, load_schools())
+                print("Текст с кадров: включён (API), параллельно с Whisper", flush=True)
+            else:
+                print("Текст с кадров: пропуск — нет openrouter_key.txt", flush=True)
+        except Exception as exc:
+            print("Текст с кадров: пропуск —", exc, flush=True)
+
+    def ocr_job(post_dir):
+        try:
+            from video_frames_ocr import transcribe_video
+            m, b, k, sch = ocr_ctx
+            transcribe_video(post_dir, m, b, k, sch, a.frames, False, quiet=True)
+        except Exception as exc:
+            print(f"  {post_dir.name}: текст с кадров не получен ({str(exc)[:80]})", flush=True)
 
     q: queue.Queue = queue.Queue(maxsize=a.workers * 3)
     stop = object()
@@ -153,6 +176,8 @@ def main():
                     extract_frames(v, d / "frames", a.frames)
                 except Exception as exc:
                     print(f"  {pid}: кадры не сохранены ({str(exc)[:80]})", flush=True)
+            if ocr_pool is not None and (d / "frames").exists() and not list(d.glob("frames.*.vlm.json")):
+                ocr_pool.submit(ocr_job, d)
             r = tw.transcribe_file(v, a.model, prompt=prompt)
             r["model"] = a.model; r["source_file"] = "yt-dlp" if TMP in v.parents else "pytok"
             (d / "transcript.whisper.json").write_text(json.dumps(r, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -170,6 +195,9 @@ def main():
                     v.parent.rmdir()
                 except Exception:
                     pass
+    if ocr_pool is not None:
+        print("Жду, пока доработает текст с кадров...", flush=True)
+        ocr_pool.shutdown(wait=True)
     print("\nГотово:", stats, flush=True)
     return 0
 

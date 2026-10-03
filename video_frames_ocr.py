@@ -87,12 +87,13 @@ def transcribe_video(post_dir: Path, model, base_url, key, schools, n_frames=DEF
     from ocr_vlm import ask_model, parse_json
     from transcribe_whisper import find_video
     video = find_video(post_dir)
-    if not video:
+    existing = sorted((post_dir / "frames").glob("*.jpg")) if (post_dir / "frames").exists() else []
+    if not video and not existing:
         return None
     cache = post_dir / f"frames.{model.replace('/', '_')}.vlm.json"
     if cache.exists() and not force:
         return json.loads(cache.read_text(encoding="utf-8"))
-    frames = extract_frames(video, post_dir / "frames", n_frames)
+    frames = existing or extract_frames(video, post_dir / "frames", n_frames)
     frames = dedupe_frames(frames)
     prompt = FRAME_PROMPT.replace("{names}", ", ".join(schools))
     texts, sch, promos, per = [], [], [], []
