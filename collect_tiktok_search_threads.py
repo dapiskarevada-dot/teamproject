@@ -276,6 +276,7 @@ async def collect_slides_and_ocr(api, unique_posts, args):
                 await images.collect_one(api, p["canonical_url"], img_args)
             except Exception as exc:
                 print(f"slides {pid}: {type(exc).__name__}: {exc}")
+            await drain_responses(api)
             if i < len(photo) - 1 and args.between_posts_delay > 0:
                 await asyncio.sleep(args.between_posts_delay)
     if args.no_ocr:
@@ -359,6 +360,7 @@ async def collect_videos_and_transcribe(api, unique_posts, args):
                         print(f"  video {pid}: NOT downloaded (all methods failed)")
         except Exception as exc:
             print(f"  video {pid}: {type(exc).__name__}: {str(exc)[:160]}")
+        await drain_responses(api)
         if i < len(videos) - 1 and args.request_delay > 0:
             await asyncio.sleep(args.request_delay)
         if args.whisper == "off":
@@ -575,6 +577,14 @@ async def enrich_posts_table(api, unique_posts, args):
                   f"subs={'yes' if row.get('subtitle_text') else 'no'}")
 
 
+async def drain_responses(api):
+    """pytok копит тела всех перехваченных ответов (в т.ч. видео) до конца сессии — чистим, иначе память растёт на гигабайты."""
+    try:
+        await api.process_pending_responses()
+    except Exception:
+        pass
+
+
 def mentions_aliases(fields: dict, aliases) -> bool:
     if not aliases:
         return True
@@ -760,6 +770,7 @@ async def main_async(args):
                     count=args.search_count,
                 )
                 all_records.extend(records)
+                await drain_responses(api)
             except Exception as exc:
                 print(
                     "SEARCH STOP for this query; no automatic retry:",
@@ -776,6 +787,7 @@ async def main_async(args):
         for hi, tag in enumerate([] if reuse else hashtags):
             try:
                 all_records.extend(await run_hashtag_feed(api, tag, args.search_count))
+                await drain_responses(api)
             except Exception as exc:
                 print("HASHTAG STOP for this tag; no automatic retry:", f"{type(exc).__name__}: {exc}")
             if hi < len(hashtags) - 1 and args.between_queries_delay > 0:
@@ -806,6 +818,7 @@ async def main_async(args):
             aliases = parse_aliases(args.prefer)
             for ai, u in enumerate(authors):
                 all_records.extend(await run_author_feed(api, u, args.author_count, aliases))
+                await drain_responses(api)
                 if ai < len(authors) - 1 and args.between_queries_delay > 0:
                     await asyncio.sleep(args.between_queries_delay)
             unique_posts = apply_window(merge_search_records(all_records), args)
@@ -904,6 +917,7 @@ async def main_async(args):
             # Preserve search provenance in the post summary layer.
             summary["search_matches"] = item["matched_queries"]
             post_summaries.append(summary)
+            await drain_responses(api)
 
             if (
                 pi < len(unique_posts) - 1
