@@ -1124,8 +1124,8 @@ def main():
     if args.between_queries_delay < 0:
         parser.error("--between-queries-delay must be >= 0")
 
-    if not gather_queries(args) and not gather_hashtags(args):
-        parser.error("Provide at least one --query/--queries-file or --hashtag/--hashtags-file")
+    if not args.posts_json and not gather_queries(args) and not gather_hashtags(args):
+        parser.error("Provide at least one --query/--queries-file or --hashtag/--hashtags-file (or --posts-json)")
 
     return asyncio.run(main_async(args))
 
