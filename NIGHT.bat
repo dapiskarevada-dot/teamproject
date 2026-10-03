@@ -59,6 +59,7 @@ python -c "import pandas, openpyxl, requests" 2>nul || pip install -q -r require
 python -c "import camoufox" 2>nul || pip install -q camoufox
 python -m camoufox path >nul 2>nul || python -m camoufox fetch
 python -c "import faster_whisper, av, numpy" 2>nul || (echo   installing Whisper, 5-10 minutes... & pip install -q faster-whisper av numpy)
+python -c "import PIL" 2>nul || pip install -q pillow
 pip install -q -U yt-dlp 2>nul
 python -u collect_tiktok_search_threads.py --check >nul 2>nul || (echo   ERROR: code check failed: & python -u collect_tiktok_search_threads.py --check & pause & exit /b 1)
 if not exist openrouter_key.txt echo   WARNING: no openrouter_key.txt - carousel slides will not be transcribed, everything else runs.
