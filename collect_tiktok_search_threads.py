@@ -757,8 +757,11 @@ async def main_async(args):
 
     pool = AccountsPool()
 
+    if args.account:
+        print("Account:", args.account)
     async with await PyTok.from_pool(
         pool,
+        username=args.account or None,
         request_delay=args.request_delay,
     ) as api:
 
@@ -1001,6 +1004,7 @@ def main():
         default="",
         help="Comma-separated school aliases; posts mentioning them are processed first (used with --max-posts).",
     )
+    parser.add_argument("--account", default="", help="Use this TikTok account from the pool (default: least recently used free one).")
     parser.add_argument("--posts-json", default="", help="Reuse posts from an earlier search_posts_*.json instead of searching.")
     parser.add_argument("--only-ids", default="", help="Text file with post IDs (one per line): process only these.")
     parser.add_argument("--since", default="", help="Keep only posts created on/after YYYY-MM-DD (UTC).")

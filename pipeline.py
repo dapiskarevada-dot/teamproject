@@ -128,6 +128,7 @@ def mark(name, **kw):
 
 # ------------------------------------------------------------------ аккаунты
 def show_accounts(reset_locks=False):
+    show_accounts.names = getattr(show_accounts, "names", [])
     """Печатает активные аккаунты пула и возвращает их число (0, если пул недоступен)."""
     try:
         import asyncio
@@ -148,9 +149,20 @@ def show_accounts(reset_locks=False):
         print("Не удалось прочитать пул аккаунтов:", exc)
         return 0
     print(f"=== Аккаунты TikTok в пуле: активных {len(active)}, неактивных {len(inactive)}")
+    names = []
     for a in active:
-        print("    ", getattr(a, "username", a))
+        print("    ", getattr(a, "username", a)); names.append(getattr(a, "username", str(a)))
+    show_accounts.names = names
     return len(active)
+
+
+def release_account(username):
+    try:
+        import asyncio
+        from pytok.accounts import AccountsPool
+        asyncio.run(AccountsPool().release_account(username))
+    except Exception as exc:
+        print(f"не удалось освободить аккаунт {username}: {exc}")
 
 
 # ------------------------------------------------------------------ сбор одной школы
@@ -287,6 +299,8 @@ def run_heavy(a, school):
            "--posts-json", str(merged_file), "--only-ids", str(ids_file), "--skip-collected",
            "--comments", str(a.comments), "--whisper", "off", "--ocr-model", a.ocr_model, "--case-dir", str(case_dir),
            "--prefer", school["aliases"], "--max-posts", "0"]
+    if a.account:
+        cmd += ["--account", a.account]
     if a.no_images:
         cmd.append("--no-images")
     if a.no_ocr:
@@ -369,6 +383,8 @@ def run_collect(a, school):
            "--whisper", a.whisper, "--whisper-model", a.whisper_model, "--ocr-model", a.ocr_model,
            "--case-dir", str(case_dir),
            "--authors-min-posts", str(a.authors_min_posts), "--author-count", str(a.author_count)]
+    if a.account:
+        cmd += ["--account", a.account]
     if a.since:
         cmd += ["--since", a.since]
     if a.until:
@@ -549,9 +565,9 @@ def process_school(a, school):
     return rc, res
 
 
-def child_args(a, school_name):
+def child_args(a, school_name, account=""):
     """Аргументы для дочернего процесса одной школы (при --parallel)."""
-    cmd = [sys.executable, "-u", __file__, "--one", school_name, "--plan", a.plan,
+    cmd = [sys.executable, "-u", __file__, "--one", school_name, "--plan", a.plan, "--account", account,
            "--max-posts", str(a.max_posts), "--search-count", str(a.search_count), "--comments", str(a.comments),
            "--whisper", a.whisper, "--whisper-model", a.whisper_model, "--ocr-model", a.ocr_model,
            "--since", a.since, "--until", a.until, "--authors-min-posts", str(a.authors_min_posts), "--author-count", str(a.author_count)]
@@ -565,22 +581,26 @@ def child_args(a, school_name):
 
 
 def run_parallel(a, todo):
-    """До a.parallel школ одновременно; каждая — отдельный процесс и свой аккаунт из пула.
-    Если потоку не достался аккаунт (NoAccountError), школа возвращается в очередь и ждёт."""
+    """До a.parallel школ одновременно; каждому потоку выдаётся свой аккаунт из пула (явно, по имени).
+    Сторож перезапускает поток, если его лог молчит дольше STALL_MIN минут; аккаунт при этом освобождается."""
+    accounts = list(getattr(show_accounts, "names", []))
+    if accounts:
+        a.parallel = min(a.parallel, len(accounts))
+    free = list(accounts)
     running, queue = [], list(todo)
     retries = {}
     while queue or running:
-        while queue and len(running) < a.parallel:
+        while queue and len(running) < a.parallel and (free or not accounts):
             s = queue.pop(0)
+            acct = free.pop(0) if free else ""
             logname = f"pipeline_{slug(s['name'])}.log"
             log = open(logname, "a", encoding="utf-8")
-            print(f"=== старт потока: {s['name']}  (лог {logname})", flush=True)
-            p = subprocess.Popen(child_args(a, s["name"]), stdout=log, stderr=subprocess.STDOUT)
-            running.append((s, p, log, logname))
+            print(f"=== старт потока: {s['name']}  (аккаунт {acct or 'любой'}, лог {logname})", flush=True)
+            p = subprocess.Popen(child_args(a, s["name"], acct), stdout=log, stderr=subprocess.STDOUT)
+            running.append((s, p, log, logname, acct))
             time.sleep(25)        # браузеры стартуют не одновременно
         for item in list(running):
-            s, p, log, logname = item
-            # сторож: лог потока не менялся STALL_MIN минут -> поток завис, перезапускаем (продолжит с места)
+            s, p, log, logname, acct = item
             try:
                 idle = time.time() - Path(logname).stat().st_mtime
             except Exception:
@@ -588,14 +608,18 @@ def run_parallel(a, todo):
             if p.poll() is None and idle > STALL_MIN * 60:
                 print(f"=== {s['name']}: нет записей в логе {int(idle // 60)} мин — перезапускаю поток", flush=True)
                 try:
-                    p.kill()
+                    p.kill(); p.wait(timeout=30)
                 except Exception:
                     pass
                 log.close(); running.remove(item)
+                if acct:
+                    release_account(acct); free.append(acct)
                 queue.insert(0, s)
                 continue
             if p.poll() is not None:
                 log.close(); running.remove(item)
+                if acct:
+                    release_account(acct); free.append(acct)
                 tail = ""
                 try:
                     tail = Path(logname).read_text(encoding="utf-8", errors="ignore")[-4000:]
@@ -603,25 +627,12 @@ def run_parallel(a, todo):
                     pass
                 if p.returncode != 0 and "NoAccountError" in tail and retries.get(s["name"], 0) < 20:
                     retries[s["name"]] = retries.get(s["name"], 0) + 1
-                    print(f"=== {s['name']}: свободного аккаунта нет — вернул в очередь (попытка {retries[s['name']]}), жду 2 мин", flush=True)
+                    print(f"=== {s['name']}: аккаунт {acct or '?'} оказался занят — вернул школу в очередь (попытка {retries[s['name']]}), жду 2 мин", flush=True)
                     queue.append(s)
-                    if a.parallel > 1:
-                        a.parallel -= 1          # аккаунтов меньше, чем думали — сужаем параллель
-                        print(f"=== параллельных потоков теперь {a.parallel}", flush=True)
                     time.sleep(120)
                 else:
                     print(f"=== поток завершён: {s['name']} (код {p.returncode})", flush=True)
         time.sleep(5)
-
-
-class _Tee:
-    """stdout и в консоль, и в файл (для Windows, где нет tee)."""
-    def __init__(self, path):
-        self.f = open(path, "a", encoding="utf-8"); self.c = sys.stdout
-    def write(self, d):
-        self.c.write(d); self.f.write(d); self.f.flush()
-    def flush(self):
-        self.c.flush(); self.f.flush()
 
 
 def main():
@@ -632,6 +643,7 @@ def main():
     ap.add_argument("--plan", default=PLAN_FILE, help="файл плана школ")
     ap.add_argument("--only", default="", help="только эти школы из плана, через запятую")
     ap.add_argument("--one", default="", help="(служебное) одна школа из плана, в дочернем процессе")
+    ap.add_argument("--account", default="", help="(служебное) аккаунт TikTok для этого потока")
     ap.add_argument("--max-posts", type=int, default=MAX_POSTS)
     ap.add_argument("--since", default=SINCE, help="окно по дате публикации: с YYYY-MM-DD ('' = без)")
     ap.add_argument("--until", default=UNTIL, help="окно по дате публикации: по YYYY-MM-DD ('' = без)")
