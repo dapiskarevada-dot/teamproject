@@ -55,7 +55,7 @@ SINCE = "2025-10-01"              # окно по дате публикации 
 UNTIL = "2026-10-01"
 AUTHORS_MIN_POSTS = 2             # ленты авторов, у которых >= N постов о школе (амбассадоры, кураторы); 0 = выкл
 AUTHOR_COUNT = 200                # постов читать из ленты автора
-SAMPLE = 300                      # глубина (--heavy): постов на школу в выборке (все посты с >=2 школами + страты); 0 = все
+SAMPLE = 0                        # глубина (--heavy): 0 = ВСЕ посты с упоминанием школы; N = выборка (посты с >=2 школами + страты)
 FRAMES = "on"                     # текст с кадров видео через API (on/off)
 FRAMES_N = 5                      # кадров на видео
 SEARCH_COUNT = 200                # результатов на запрос/хэштег (потолок TikTok ~200)
@@ -222,7 +222,16 @@ def choose_sample(school, posts: dict, n: int, seed: int = 42):
     posts = relevant
     ids = list(posts.keys())
     if n <= 0 or len(ids) <= n:
-        return ids, {"all_relevant": len(ids)}
+        def prio(pid):
+            f = posts[pid]
+            others = [x for x in schools_in_fields(f, aliases) if x != short]
+            try:
+                views = int(f.get("play_count") or f.get("views") or 0)
+            except Exception:
+                views = 0
+            return (0 if others else 1, -views)
+        ids.sort(key=prio)      # сначала посты с >=2 школами, затем по просмотрам — при обрыве самое ценное уже собрано
+        return ids, {"all_relevant": len(ids), "with_2plus_schools": sum(1 for pid in ids if prio(pid)[0] == 0)}
     official = {u.lower() for u in (school.get("authors") or [])}
     by_author = {}
     for pid, f in posts.items():
