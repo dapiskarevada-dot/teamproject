@@ -58,6 +58,7 @@ AUTHOR_COUNT = 200                # постов читать из ленты а
 SAMPLE = 1000                     # глубина (--heavy): планка на школу (все посты с >=2 школами + страты official/ambassador/UGC); 0 = все
 FRAMES = "on"                     # текст с кадров видео через API (on/off)
 FRAMES_N = 5                      # кадров на видео
+STALL_MIN = 20                    # сторож: поток без записей в логе дольше N минут считается зависшим и перезапускается
 SEARCH_COUNT = 200                # результатов на запрос/хэштег (потолок TikTok ~200)
 COMMENTS = 200                    # комментариев верхнего уровня на пост (+ все реплаи к ним)
 WHISPER = "missing"               # missing | all | off  (off = без расшифровки речи; python transcribe_whisper.py — отдельно)
@@ -579,6 +580,20 @@ def run_parallel(a, todo):
             time.sleep(25)        # браузеры стартуют не одновременно
         for item in list(running):
             s, p, log, logname = item
+            # сторож: лог потока не менялся STALL_MIN минут -> поток завис, перезапускаем (продолжит с места)
+            try:
+                idle = time.time() - Path(logname).stat().st_mtime
+            except Exception:
+                idle = 0
+            if p.poll() is None and idle > STALL_MIN * 60:
+                print(f"=== {s['name']}: нет записей в логе {int(idle // 60)} мин — перезапускаю поток", flush=True)
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+                log.close(); running.remove(item)
+                queue.insert(0, s)
+                continue
             if p.poll() is not None:
                 log.close(); running.remove(item)
                 tail = ""

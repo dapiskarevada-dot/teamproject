@@ -331,7 +331,7 @@ async def collect_videos_and_transcribe(api, unique_posts, args):
             continue
         try:
             video = api.video(id=pid, username=user)
-            info = await video.info()
+            info = await asyncio.wait_for(video.info(), timeout=150)
             item = unwrap_item(info)
             if need_subs:
                 langs = subtitle_langs(item)
@@ -353,7 +353,7 @@ async def collect_videos_and_transcribe(api, unique_posts, args):
                     print(f"  video {pid}: saved {len(data) // 1024} KB" + (" | subs: tiktok" if f.get("subtitle_text") else ""))
                 else:
                     from video_download import download_video
-                    path = await download_video(api, p["canonical_url"], item, post_dir)
+                    path = await asyncio.wait_for(download_video(api, p["canonical_url"], item, post_dir), timeout=400)
                     if path:
                         f["video_file"] = str(path)
                     else:
