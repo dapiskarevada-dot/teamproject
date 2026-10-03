@@ -42,6 +42,21 @@ BASE_PROMPT_WORDS = (
 
 _model = None
 
+# Фразы, которые Whisper «слышит» на тишине и музыке (из титров обучающих данных).
+HALLUCINATIONS = ("субтитры создавал", "субтитры сделал", "редактор субтитров", "продолжение следует", "dimatorzok",
+                  "подписывайтесь на канал", "спасибо за просмотр", "спасибо за внимание", "субтитры подготовил",
+                  "thanks for watching", "subtitles by", "amara.org")
+
+
+def is_hallucination(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    if any(h in t for h in HALLUCINATIONS):
+        return True
+    words = t.split()
+    return len(words) >= 6 and len(set(words)) <= 2      # «да да да да да да»
+
 
 def build_prompt(schools=None):
     try:
@@ -96,15 +111,22 @@ def transcribe_file(path, model_name=DEFAULT_MODEL, language=DEFAULT_LANGUAGE, p
         audio, language=language, vad_filter=True, beam_size=5,
         initial_prompt=prompt or build_prompt(), condition_on_previous_text=False,
     )
-    segs, parts = [], []
+    segs, parts, dropped = [], [], 0
     for s in segments:
         t = s.text.strip()
+        # Фильтр галлюцинаций: типовые фразы на тишине/музыке и сегменты с низкой уверенностью.
+        bad = (is_hallucination(t) or (getattr(s, "no_speech_prob", 0) or 0) > 0.75
+               or (getattr(s, "avg_logprob", 0) or 0) < -1.2 or (getattr(s, "compression_ratio", 0) or 0) > 2.4)
         if verbose:
-            print(f"    [{s.start:5.1f}–{s.end:5.1f} с] {t}", flush=True)
+            print(f"    [{s.start:5.1f}–{s.end:5.1f} с]{' (отброшено)' if bad else ''} {t}", flush=True)
+        if bad:
+            dropped += 1; continue
         segs.append({"start": round(s.start, 2), "end": round(s.end, 2), "text": t})
         parts.append(t)
+    speech = round(sum(x["end"] - x["start"] for x in segs), 1)
     return {"text": " ".join(parts).strip()[:32000], "segments": segs, "language": getattr(info, "language", language),
-            "duration": round(getattr(info, "duration", 0.0) or 0.0, 1), "seconds": round(time.monotonic() - t0, 1)}
+            "duration": round(getattr(info, "duration", 0.0) or 0.0, 1), "seconds": round(time.monotonic() - t0, 1),
+            "speech_seconds": speech, "dropped_segments": dropped}
 
 
 def download_ytdlp(url, folder: Path):

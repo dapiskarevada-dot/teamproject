@@ -314,7 +314,7 @@ async def collect_videos_and_transcribe(api, unique_posts, args):
     all, off. Fills subtitle_*, transcript_* and video_file fields.
     """
     videos = [p for p in unique_posts if p.get("post_type_inferred") != "photo"]
-    if not videos or (args.no_videos and args.whisper == "off"):
+    if not videos:
         return
     media_root = args.case_dir.parent / "tiktok_media"
     from tiktok_fields import download_subtitles, subtitle_langs, unwrap_item
@@ -324,7 +324,7 @@ async def collect_videos_and_transcribe(api, unique_posts, args):
         f = p["fields"]
         post_dir = media_root / "raw" / "posts" / pid
         have_video = any(post_dir.glob("video.*"))
-        need_video = (not args.no_videos) and (not have_video) and args.whisper != "off"
+        need_video = (not args.no_videos) and (not have_video)      # видео нужно и для Whisper, и для текста с кадров
         need_subs = not f.get("subtitle_text")
         if not need_video and not need_subs:
             continue
@@ -339,7 +339,7 @@ async def collect_videos_and_transcribe(api, unique_posts, args):
                     f["subtitle_text"] = await asyncio.to_thread(download_subtitles, item)
                     if f["subtitle_text"]:
                         f["transcript_source"] = f.get("transcript_source") or "tiktok"
-            if need_video and (args.whisper == "all" or not f.get("subtitle_text")):
+            if need_video:
                 data = None
                 try:
                     data = await asyncio.wait_for(video.bytes(), timeout=120)
@@ -715,8 +715,12 @@ async def main_async(args):
 
     queries = gather_queries(args)
     hashtags = gather_hashtags(args)
-    if not queries and not hashtags:
-        raise ValueError("Provide --query / --queries-file and/or --hashtag / --hashtags-file")
+    reuse = None
+    if args.posts_json:
+        reuse = json.loads(Path(args.posts_json).read_text(encoding="utf-8"))
+        print("REUSE posts from", args.posts_json, "| posts:", len(reuse.get("posts", [])))
+    elif not queries and not hashtags:
+        raise ValueError("Provide --query / --queries-file and/or --hashtag / --hashtags-file (or --posts-json)")
 
     run_id = stamp()
     search_dir = args.case_dir / "search"
@@ -745,7 +749,7 @@ async def main_async(args):
         request_delay=args.request_delay,
     ) as api:
 
-        for qi, query in enumerate(queries):
+        for qi, query in enumerate([] if reuse else queries):
             try:
                 records = await run_search_query(
                     api,
@@ -766,7 +770,7 @@ async def main_async(args):
                 )
                 await asyncio.sleep(args.between_queries_delay)
 
-        for hi, tag in enumerate(hashtags):
+        for hi, tag in enumerate([] if reuse else hashtags):
             try:
                 all_records.extend(await run_hashtag_feed(api, tag, args.search_count))
             except Exception as exc:
@@ -781,10 +785,19 @@ async def main_async(args):
                     json.dumps(rec, ensure_ascii=False, default=str) + "\n"
                 )
 
-        unique_posts = apply_window(merge_search_records(all_records), args)
+        if reuse:
+            unique_posts = list(reuse.get("posts", []))
+            authors = reuse.get("authors") or []
+            coverage = reuse.get("coverage") or {}
+            if args.only_ids:
+                keep = {l.strip() for l in Path(args.only_ids).read_text(encoding="utf-8").splitlines() if l.strip()}
+                unique_posts = [p for p in unique_posts if str(p["post_id"]) in keep]
+                print(f"Only-ids: {len(unique_posts)} posts selected")
+        else:
+            unique_posts = apply_window(merge_search_records(all_records), args)
 
         # Author feeds: official accounts + authors with several posts about the school.
-        authors, author_counts = pick_authors(unique_posts, args)
+        authors, author_counts = ([], {}) if reuse else pick_authors(unique_posts, args)
         if authors:
             print(f"\nAuthor feeds: {len(authors)} accounts ({', '.join('@' + a for a in authors[:12])}{'...' if len(authors) > 12 else ''})")
             aliases = parse_aliases(args.prefer)
@@ -794,7 +807,8 @@ async def main_async(args):
                     await asyncio.sleep(args.between_queries_delay)
             unique_posts = apply_window(merge_search_records(all_records), args)
 
-        coverage = coverage_report(all_records, {str(p["post_id"]) for p in unique_posts})
+        if not reuse:
+            coverage = coverage_report(all_records, {str(p["post_id"]) for p in unique_posts})
         unique_posts = apply_post_limit(unique_posts, args)
         json_dump(dedup_path, {
             "coverage": coverage,
@@ -970,6 +984,8 @@ def main():
         default="",
         help="Comma-separated school aliases; posts mentioning them are processed first (used with --max-posts).",
     )
+    parser.add_argument("--posts-json", default="", help="Reuse posts from an earlier search_posts_*.json instead of searching.")
+    parser.add_argument("--only-ids", default="", help="Text file with post IDs (one per line): process only these.")
     parser.add_argument("--since", default="", help="Keep only posts created on/after YYYY-MM-DD (UTC).")
     parser.add_argument("--until", default="", help="Keep only posts created on/before YYYY-MM-DD (UTC).")
     parser.add_argument("--author", action="append", help="Author feed to add (official account). Repeat for several.")

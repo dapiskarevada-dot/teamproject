@@ -55,6 +55,9 @@ SINCE = "2025-10-01"              # окно по дате публикации 
 UNTIL = "2026-10-01"
 AUTHORS_MIN_POSTS = 2             # ленты авторов, у которых >= N постов о школе (амбассадоры, кураторы); 0 = выкл
 AUTHOR_COUNT = 200                # постов читать из ленты автора
+SAMPLE = 300                      # глубина (--heavy): постов на школу в выборке (все посты с >=2 школами + страты); 0 = все
+FRAMES = "on"                     # текст с кадров видео через API (on/off)
+FRAMES_N = 5                      # кадров на видео
 SEARCH_COUNT = 200                # результатов на запрос/хэштег (потолок TikTok ~200)
 COMMENTS = 200                    # комментариев верхнего уровня на пост (+ все реплаи к ним)
 WHISPER = "missing"               # missing | all | off  (off = без расшифровки речи; python transcribe_whisper.py — отдельно)
@@ -150,6 +153,197 @@ def show_accounts(reset_locks=False):
 
 
 # ------------------------------------------------------------------ сбор одной школы
+MEDIA_ROOT = CASES_ROOT / "tiktok_media"
+
+
+def latest_posts_json(case_dir: Path):
+    files = sorted(glob.glob(str(case_dir / "search" / "search_posts_*.json")), key=os.path.getmtime)
+    return Path(files[-1]) if files else None
+
+
+def merged_posts(case_dir: Path):
+    """Все посты школы по всем прогонам (дедуп по ID, свежие поля побеждают, slides_/transcript_ не теряются)."""
+    posts = {}
+    for f in sorted(glob.glob(str(case_dir / "search" / "search_posts_*.json")), key=os.path.getmtime):
+        try:
+            d = json.load(open(f, encoding="utf-8"))
+        except Exception:
+            continue
+        for p in d.get("posts", []):
+            pid = str(p["post_id"]); fld = dict(p.get("fields") or {})
+            q = set(fld.get("matched_queries") or [])
+            if pid in posts:
+                old = posts[pid]; q |= set(old.get("matched_queries") or [])
+                for k, v in old.items():
+                    if (k.startswith("slides_") or k.startswith("transcript_") or k.startswith("screen_") or k == "subtitle_text") and not fld.get(k):
+                        fld[k] = v
+            fld["matched_queries"] = sorted(q); posts[pid] = fld
+    return posts
+
+
+def all_school_aliases():
+    """{короткое имя: [алиасы]} из schools.txt — для подсчёта упоминаний других школ."""
+    out = {}
+    try:
+        from ocr_vlm import load_schools
+        for line in load_schools():
+            parts = [x.strip() for x in line.split(",") if x.strip()]
+            if parts:
+                out[parts[0]] = [x.lower() for x in parts if len(x) >= 4]
+    except Exception:
+        pass
+    return out
+
+
+def schools_in_fields(f: dict, aliases_by_school):
+    import re
+    blob = " ".join(str(f.get(k) or "") for k in ("description", "hashtags", "subtitle_text", "transcript_whisper",
+                                                   "slides_text", "slides_schools", "screen_text", "screen_schools", "author_username", "author_bio")).lower()
+    found = []
+    for name, al in aliases_by_school.items():
+        if any(re.search(r"(?<![a-zа-яё0-9])" + re.escape(a), blob) for a in al):
+            found.append(name)
+    return found
+
+
+def choose_sample(school, posts: dict, n: int, seed: int = 42):
+    """Стратифицированная выборка для глубины: все посты с >=2 школами + пропорционально из страт
+    official / ambassador (автор с >=5 постами о школе) / ugc. n=0 — все посты."""
+    import random
+    ids = list(posts.keys())
+    if n <= 0 or len(ids) <= n:
+        return ids, {"all": len(ids)}
+    aliases = all_school_aliases()
+    short = school["name"].split(",")[0].strip()
+    own = [a.strip().lower() for a in school["name"].split(",") if a.strip()]
+    official = {u.lower() for u in (school.get("authors") or [])}
+    by_author = {}
+    for pid, f in posts.items():
+        by_author.setdefault((f.get("author_username") or "").lower(), []).append(pid)
+    strata = {"official": [], "ambassador": [], "ugc": []}
+    must = []
+    for pid, f in posts.items():
+        u = (f.get("author_username") or "").lower()
+        others = [x for x in schools_in_fields(f, aliases) if x != short]
+        if others:
+            must.append(pid); continue
+        if u in official or any(a in u for a in own if len(a) >= 4):
+            strata["official"].append(pid)
+        elif len(by_author.get(u, [])) >= 5:
+            strata["ambassador"].append(pid)
+        else:
+            strata["ugc"].append(pid)
+    rnd = random.Random(seed)
+    rest = max(0, n - len(must))
+    total = sum(len(v) for v in strata.values()) or 1
+    chosen = list(must)
+    for k, v in strata.items():
+        take = min(len(v), round(rest * len(v) / total))
+        chosen += rnd.sample(v, take)
+    # добить до n из ugc, если округление недобрало
+    pool = [x for x in strata["ugc"] + strata["ambassador"] + strata["official"] if x not in set(chosen)]
+    while len(chosen) < n and pool:
+        chosen.append(pool.pop(rnd.randrange(len(pool))))
+    info = {"must_2plus_schools": len(must), **{k: sum(1 for x in chosen if x in set(v)) for k, v in strata.items()}, "total": len(chosen)}
+    return chosen, info
+
+
+def run_heavy(a, school):
+    """Глубина по уже собранным постам: выборка -> видео + комментарии/реплаи (Whisper и кадры — потом, одним процессом)."""
+    case_dir = CASES_ROOT / slug(school["name"])
+    pj = latest_posts_json(case_dir)
+    if not pj:
+        print(f"[{school['name']}] нет собранных постов (cases/{slug(school['name'])}/search) — сначала ПЕРЕПИСЬ"); return 2, case_dir
+    posts = merged_posts(case_dir)
+    ids, info = choose_sample(school, posts, a.sample)
+    # посты, которых нет в последнем json (из старых прогонов), собрать в единый файл для --posts-json
+    merged_file = case_dir / "search" / "posts_merged_for_depth.json"
+    json.dump({"posts": [{"post_id": pid, "canonical_url": f.get("video_url"), "post_type_inferred": f.get("post_type"),
+                          "username": f.get("author_username"), "matched_queries": f.get("matched_queries"), "fields": f}
+                         for pid, f in posts.items()],
+               "coverage": (json.load(open(pj, encoding="utf-8")).get("coverage") or {}), "authors": []},
+              open(merged_file, "w", encoding="utf-8"), ensure_ascii=False)
+    ids_file = case_dir / "sample_ids.txt"
+    ids_file.write_text("\n".join(ids) + "\n", encoding="utf-8")
+    json.dump({"n": a.sample, "chosen": len(ids), "strata": info}, open(case_dir / "sample_info.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    cmd = [sys.executable, "-u", "collect_tiktok_search_threads.py",
+           "--posts-json", str(merged_file), "--only-ids", str(ids_file), "--skip-collected",
+           "--comments", str(a.comments), "--whisper", "off", "--ocr-model", a.ocr_model, "--case-dir", str(case_dir),
+           "--prefer", school["aliases"], "--max-posts", "0"]
+    if a.no_images:
+        cmd.append("--no-images")
+    if a.no_ocr:
+        cmd.append("--no-ocr")
+    if a.no_videos:
+        cmd.append("--no-videos")
+    if a.search_only:
+        cmd.append("--search-only")
+    print(f"\n{'=' * 78}\n=== ГЛУБИНА: {school['name']}  |  постов {len(posts)}, в выборке {len(ids)} {info}\n{'=' * 78}", flush=True)
+    print("RUN:", " ".join(cmd), flush=True)
+    mark(school["name"], status="running", started=datetime.now().isoformat(timespec="seconds"), case_dir=str(case_dir), stage="heavy")
+    return subprocess.call(cmd), case_dir
+
+
+def run_transcriptions(a, plan):
+    """После всех потоков, ОДНИМ процессом: Whisper (где нет субтитров TikTok) и текст с кадров — по постам выборки."""
+    targets_whisper, targets_frames = set(), set()
+    for s in plan:
+        case_dir = CASES_ROOT / slug(s["name"])
+        f = case_dir / "sample_ids.txt"
+        if not f.exists():
+            continue
+        ids = {l.strip() for l in f.read_text(encoding="utf-8").splitlines() if l.strip()}
+        posts = merged_posts(case_dir)
+        for pid in ids:
+            fl = posts.get(pid) or {}
+            if fl.get("post_type") == "photo":
+                continue
+            targets_frames.add(pid)
+            if a.whisper == "all" or (a.whisper == "missing" and not fl.get("subtitle_text")):
+                targets_whisper.add(pid)
+    if a.whisper != "off" and targets_whisper:
+        try:
+            import transcribe_whisper as tw
+            print(f"\n=== Whisper ({a.whisper_model}) одним процессом: {len(targets_whisper)} видео", flush=True)
+            tw.transcribe_dir(MEDIA_ROOT, post_ids=targets_whisper, model_name=a.whisper_model)
+        except Exception as exc:
+            print("Whisper пропущен:", type(exc).__name__, exc)
+    if a.frames != "off" and targets_frames:
+        try:
+            import video_frames_ocr as vf
+            print(f"\n=== Текст с кадров видео: {len(targets_frames)} видео", flush=True)
+            vf.transcribe_dir(MEDIA_ROOT, post_ids=targets_frames, model=a.ocr_model, n_frames=a.frames_n)
+        except Exception as exc:
+            print("Текст с кадров пропущен:", type(exc).__name__, exc)
+
+
+def apply_caches(rows_by_id: dict):
+    """Подтянуть в поля постов кэши расшифровок: transcript.whisper.json и frames.*.vlm.json."""
+    for pid, f in rows_by_id.items():
+        d = MEDIA_ROOT / "raw" / "posts" / pid
+        if not d.exists():
+            continue
+        if not f.get("transcript_whisper"):
+            c = d / "transcript.whisper.json"
+            if c.exists():
+                try:
+                    j = json.loads(c.read_text(encoding="utf-8"))
+                    if j.get("text"):
+                        f["transcript_whisper"] = j["text"]; f["transcript_source"] = f.get("transcript_source") or "whisper"
+                    elif not f.get("transcript_source"):
+                        f["transcript_source"] = "whisper: речи нет"
+                except Exception:
+                    pass
+        if not f.get("screen_text"):
+            for c in d.glob("frames.*.vlm.json"):
+                try:
+                    j = json.loads(c.read_text(encoding="utf-8"))
+                    f["screen_text"] = j.get("text") or ""; f["screen_schools"] = "; ".join(j.get("schools") or []); f["screen_promo"] = j.get("promo") or ""
+                except Exception:
+                    pass
+                break
+
+
 def run_collect(a, school):
     case_dir = CASES_ROOT / slug(school["name"])
     cmd = [sys.executable, "-u", "collect_tiktok_search_threads.py",
@@ -187,17 +381,14 @@ def build_final_workbook(school_name: str, case_dir: Path):
     from export_comments_table import export_all
 
     short = school_name.split(",")[0].strip()
-    posts = {}
-    for f in sorted(glob.glob(str(case_dir / "search" / "search_posts_*.json")), key=os.path.getmtime):
-        for p in json.load(open(f, encoding="utf-8")).get("posts", []):
-            pid = str(p["post_id"]); fld = dict(p.get("fields") or {})
-            q = set(fld.get("matched_queries") or [])
-            if pid in posts:
-                old = posts[pid]; q |= set(old.get("matched_queries") or [])
-                for k, v in old.items():           # не терять слайды/транскрипты из прошлых прогонов
-                    if (k.startswith("slides_") or k.startswith("transcript_") or k == "subtitle_text") and not fld.get(k):
-                        fld[k] = v
-            fld["matched_queries"] = sorted(q); posts[pid] = fld
+    posts = merged_posts(case_dir)
+    apply_caches(posts)
+    sample_file = case_dir / "sample_ids.txt"
+    sample = {l.strip() for l in sample_file.read_text(encoding="utf-8").splitlines() if l.strip()} if sample_file.exists() else set()
+    aliases_all = all_school_aliases()
+    for pid, f in posts.items():
+        f["in_sample"] = bool(sample) and pid in sample
+        f["schools_mentioned"] = "; ".join(schools_in_fields(f, aliases_all))
     rows = list(posts.values())
     if not rows:
         print(f"[{short}] нет данных для итоговой книги"); return None
@@ -329,7 +520,7 @@ def process_school(a, school):
     case_dir = CASES_ROOT / slug(school["name"])
     rc = 0
     if not a.final_only:
-        rc, case_dir = run_collect(a, school)
+        rc, case_dir = run_heavy(a, school) if a.heavy else run_collect(a, school)
         if rc != 0:
             print(f"\n[{school['name']}] сбор завершился с кодом {rc}; собираю ИТОГ из того, что есть", flush=True)
     res = build_final_workbook(school["name"], case_dir)
@@ -345,9 +536,10 @@ def child_args(a, school_name):
            "--max-posts", str(a.max_posts), "--search-count", str(a.search_count), "--comments", str(a.comments),
            "--whisper", a.whisper, "--whisper-model", a.whisper_model, "--ocr-model", a.ocr_model,
            "--since", a.since, "--until", a.until, "--authors-min-posts", str(a.authors_min_posts), "--author-count", str(a.author_count)]
-    for flag in ("search_only", "no_images", "no_ocr", "no_videos", "final_only", "redo"):
+    for flag in ("search_only", "no_images", "no_ocr", "no_videos", "final_only", "redo", "heavy"):
         if getattr(a, flag):
             cmd.append("--" + flag.replace("_", "-"))
+    cmd += ["--sample", str(a.sample), "--frames", a.frames, "--frames-n", str(a.frames_n)]
     if not a.fetch_author:
         cmd.append("--no-fetch-author")
     return cmd
@@ -430,6 +622,10 @@ def main():
     ap.add_argument("--no-videos", action="store_true")
     ap.add_argument("--test", action="store_true", help="маленький прогон: 5 результатов, 3 поста, 10 комментариев")
     ap.add_argument("--final-only", action="store_true", help="только собрать ИТОГ из уже собранного")
+    ap.add_argument("--heavy", action="store_true", help="глубина по уже собранным постам: выборка -> видео + комментарии/реплаи, затем Whisper и текст с кадров")
+    ap.add_argument("--sample", type=int, default=SAMPLE, help="размер выборки на школу для глубины (0 = все посты)")
+    ap.add_argument("--frames", choices=["on", "off"], default=FRAMES, help="текст с кадров видео через API")
+    ap.add_argument("--frames-n", type=int, default=FRAMES_N, help="кадров на видео")
     a = ap.parse_args()
     if a.test:
         a.search_count, a.comments, a.max_posts = 5, 10, 3
@@ -482,6 +678,9 @@ def main():
         for s in todo:
             rc, _ = process_school(a, s)
             rc_all = rc_all or rc
+
+    if a.heavy and not a.final_only:
+        run_transcriptions(a, [s for s in plan if not only or s["name"].split(",")[0].strip().lower() in only or s["name"].lower() in only])
 
     # общий итог по всем школам, у которых есть данные (включая готовые ранее)
     results = []

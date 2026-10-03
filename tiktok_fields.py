@@ -58,6 +58,11 @@ COLUMNS = {
     "slides_context": "Контекст слайдов",
     "slides_comparison": "Сравнение школ на слайдах",
     "slides_summary": "О чём слайды",
+    "screen_text": "Текст на экране (видео)",
+    "screen_schools": "Школы на экране (видео)",
+    "screen_promo": "Промо на экране (видео)",
+    "in_sample": "В выборке (глубина)",
+    "schools_mentioned": "Школы упомянуты (все поля)",
 }
 
 

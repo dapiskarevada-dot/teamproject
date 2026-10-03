@@ -35,7 +35,8 @@ def stage_from_log(path: Path):
         ("Search results per query", "1/6 поиск"), ("Received usable hashtag items", "1/6 ленты хэштегов"),
         ("Unique posts after dedup", "2/6 таблица постов"), ("Photo posts", "3/6 слайды + расшифровка"),
         ("Video posts", "4/6 видео + субтитры"), ("Whisper:", "4/6 Whisper"),
-        ("Comments: skipping", "5/6 комментарии"), ("roots requested", "5/6 комментарии"),
+        ("REUSE posts from", "глубина: старт"), ("Comments: skipping", "5/6 комментарии"), ("roots requested", "5/6 комментарии"),
+        ("=== Whisper (", "Whisper"), ("Frames OCR:", "текст с кадров"),
         ("FINAL SUMMARY", "6/6 итог"), ("ИТОГ [", "готово"),
     ]
     last, pos = "запуск", -1
