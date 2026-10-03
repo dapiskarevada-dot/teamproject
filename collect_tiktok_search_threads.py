@@ -668,9 +668,12 @@ def coverage_report(all_records, kept_ids):
     if m:
         est = round(n1 * n2 / m)
     last_new_pct = rows[-1]["new_pct"] if rows else None
-    coverage_pct = round(100 * total_found / est, 1) if est and est >= total_found else (100.0 if est else None)
+    # покрытие считаем по «видимому через поиск/хэштеги»; ленты авторов — отдельная прибавка сверх этого
+    visible = len(groups["поиск"] | groups["хэштег"])
+    coverage_pct = round(100 * min(visible, est) / est, 1) if est else None
     verdict = "ок" if (coverage_pct is not None and coverage_pct >= 90 and (last_new_pct is None or last_new_pct < 5)) else "добавить запросы"
     rep = {"channels": rows, "found": total_found, "search": n1, "hashtags": n2, "both": m, "authors": len(groups["автор"]),
+           "visible_search_hashtags": visible, "authors_extra": total_found - visible,
            "estimate": est, "coverage_pct": coverage_pct, "last_channel_new_pct": last_new_pct, "verdict": verdict}
     print("\nCOVERAGE: found", total_found, "| search", n1, "| hashtags", n2, "| both", m, "| authors", len(groups["автор"]),
           "| estimate", est, "| coverage", coverage_pct, "% | last channel new", last_new_pct, "% ->", verdict)

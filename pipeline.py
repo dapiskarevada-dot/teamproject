@@ -209,13 +209,20 @@ def schools_in_fields(f: dict, aliases_by_school):
 def choose_sample(school, posts: dict, n: int, seed: int = 42):
     """Стратифицированная выборка для глубины: все посты с >=2 школами + пропорционально из страт
     official / ambassador (автор с >=5 постами о школе) / ugc. n=0 — все посты."""
-    import random
-    ids = list(posts.keys())
-    if n <= 0 or len(ids) <= n:
-        return ids, {"all": len(ids)}
+    import random, re
     aliases = all_school_aliases()
     short = school["name"].split(",")[0].strip()
-    own = [a.strip().lower() for a in school["name"].split(",") if a.strip()]
+    own = [a.strip().lower() for a in school["name"].split(",") if a.strip() and len(a.strip()) >= 4]
+    def mentions_own(f):
+        blob = " ".join(str(f.get(k) or "") for k in ("description", "hashtags", "subtitle_text", "transcript_whisper", "slides_text",
+                                                       "slides_schools", "screen_text", "author_username", "author_nickname", "author_bio")).lower()
+        return any(re.search(r"(?<![a-zа-яё0-9])" + re.escape(a), blob) for a in own)
+    relevant = {pid: f for pid, f in posts.items() if mentions_own(f)}
+    print(f"[{short}] постов всего {len(posts)}, с упоминанием школы {len(relevant)} — выборка только из них", flush=True)
+    posts = relevant
+    ids = list(posts.keys())
+    if n <= 0 or len(ids) <= n:
+        return ids, {"all_relevant": len(ids)}
     official = {u.lower() for u in (school.get("authors") or [])}
     by_author = {}
     for pid, f in posts.items():
@@ -458,13 +465,15 @@ def coverage_frames(cov, short):
     w = cov.get("window") or {}
     rows += [{}, {"Канал": "Найдено уникальных (в окне)", "Улов": cov.get("found")},
              {"Канал": "Поиск / хэштеги / в обоих", "Улов": f"{cov.get('search')} / {cov.get('hashtags')} / {cov.get('both')}"},
-             {"Канал": "Ленты авторов дали", "Улов": cov.get("authors")},
+             {"Канал": "Видимо через поиск+хэштеги", "Улов": cov.get("visible_search_hashtags")},
+             {"Канал": "Ленты авторов дали сверх этого", "Улов": cov.get("authors_extra")},
              {"Канал": "Оценка всего видимого (N ≈ n1·n2/m)", "Улов": cov.get("estimate")},
              {"Канал": "Покрытие, %", "Улов": cov.get("coverage_pct")},
              {"Канал": "Последний канал добавил, %", "Улов": cov.get("last_channel_new_pct")},
              {"Канал": "Окно", "Улов": f"{w.get('since') or '…'} — {w.get('until') or '…'}"},
              {"Канал": "Вердикт", "Улов": cov.get("verdict")}]
-    line = {"Школа": short, "Найдено": cov.get("found"), "Оценка всего": cov.get("estimate"), "Покрытие, %": cov.get("coverage_pct"),
+    line = {"Школа": short, "Найдено": cov.get("found"), "Через поиск+хэштеги": cov.get("visible_search_hashtags"), "Оценка видимого": cov.get("estimate"),
+            "Покрытие видимого, %": cov.get("coverage_pct"), "Сверх из лент авторов": cov.get("authors_extra"),
             "Последний канал, % нового": cov.get("last_channel_new_pct"), "Каналов": len(cov.get("channels", [])), "Вердикт": cov.get("verdict")}
     return pd.DataFrame(rows), line
 
