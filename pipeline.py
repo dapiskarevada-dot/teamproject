@@ -61,7 +61,7 @@ FRAMES_N = 5                      # кадров на видео
 SEARCH_COUNT = 200                # результатов на запрос/хэштег (потолок TikTok ~200)
 COMMENTS = 200                    # комментариев верхнего уровня на пост (+ все реплаи к ним)
 WHISPER = "missing"               # missing | all | off  (off = без расшифровки речи; python transcribe_whisper.py — отдельно)
-WHISPER_MODEL = "large-v3-turbo"
+WHISPER_MODEL = "large-v3"          # полная large; turbo быстрее в ~3 раза, но чуть хуже русский
 OCR_MODEL = "google/gemini-2.5-flash"
 FETCH_AUTHOR = True               # дозапрашивать профиль автора, если в выдаче нет статистики
 PARALLEL = 1                      # сколько школ собирать одновременно (<= числа аккаунтов в пуле)
