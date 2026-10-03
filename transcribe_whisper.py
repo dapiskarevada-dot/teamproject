@@ -69,6 +69,49 @@ def build_prompt(schools=None):
     return (names + ", " if names else "") + BASE_PROMPT_WORDS
 
 
+_engine = None
+
+
+def pick_engine():
+    """На Apple Silicon используем mlx-whisper (GPU, в ~5–10 раз быстрее), иначе faster-whisper (CPU)."""
+    global _engine
+    if _engine is None:
+        _engine = "faster"
+        if sys.platform == "darwin" and os.uname().machine == "arm64" and os.environ.get("WHISPER_ENGINE", "auto") != "faster":
+            try:
+                import mlx_whisper  # noqa: F401
+                _engine = "mlx"
+            except Exception:
+                _engine = "faster"
+        print(f"Whisper engine: {_engine}", flush=True)
+    return _engine
+
+
+MLX_REPOS = {"large-v3": "mlx-community/whisper-large-v3-mlx", "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+             "medium": "mlx-community/whisper-medium-mlx", "small": "mlx-community/whisper-small-mlx"}
+
+
+class _Seg:
+    def __init__(self, d):
+        self.start, self.end, self.text = d.get("start", 0.0), d.get("end", 0.0), d.get("text", "")
+        self.no_speech_prob = d.get("no_speech_prob", 0.0); self.avg_logprob = d.get("avg_logprob", 0.0)
+        self.compression_ratio = d.get("compression_ratio", 0.0)
+
+
+class _Info:
+    def __init__(self, language, duration):
+        self.language, self.duration = language, duration
+
+
+def mlx_transcribe(audio, model_name, language, prompt):
+    import mlx_whisper
+    repo = MLX_REPOS.get(model_name, model_name)
+    r = mlx_whisper.transcribe(audio, path_or_hf_repo=repo, language=language, initial_prompt=prompt,
+                               condition_on_previous_text=False, fp16=True, verbose=False)
+    segs = [_Seg(d) for d in r.get("segments", [])]
+    return segs, _Info(r.get("language", language), float(len(audio)) / 16000.0)
+
+
 def get_model(name=DEFAULT_MODEL, device=DEFAULT_DEVICE, compute=DEFAULT_COMPUTE):
     global _model
     if _model is None or _model[0] != (name, device, compute):
@@ -106,11 +149,15 @@ def transcribe_file(path, model_name=DEFAULT_MODEL, language=DEFAULT_LANGUAGE, p
     audio = load_audio(path)
     if audio.size == 0:
         return {"text": "", "segments": [], "language": None, "duration": 0.0, "seconds": round(time.monotonic() - t0, 1), "note": "нет аудиодорожки"}
-    model = get_model(model_name, device, compute)
-    segments, info = model.transcribe(
-        audio, language=language, vad_filter=True, beam_size=5,
-        initial_prompt=prompt or build_prompt(), condition_on_previous_text=False,
-    )
+    engine = pick_engine()
+    if engine == "mlx":
+        segments, info = mlx_transcribe(audio, model_name, language, prompt or build_prompt())
+    else:
+        model = get_model(model_name, device, compute)
+        segments, info = model.transcribe(
+            audio, language=language, vad_filter=True, beam_size=5,
+            initial_prompt=prompt or build_prompt(), condition_on_previous_text=False,
+        )
     segs, parts, dropped = [], [], 0
     for s in segments:
         t = s.text.strip()

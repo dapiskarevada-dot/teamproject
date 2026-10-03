@@ -40,6 +40,8 @@ python -c "import camoufox" 2>/dev/null || pip install -q camoufox
 python -m camoufox path >/dev/null 2>&1 || python -m camoufox fetch
 python -c "import faster_whisper, av, numpy" 2>/dev/null || { echo ">>> Ставлю Whisper (5–10 минут)..."; pip install -q faster-whisper av numpy; }
 python -c "import PIL" 2>/dev/null || pip install -q pillow
+# Apple Silicon: Whisper на GPU через mlx-whisper (в разы быстрее faster-whisper на CPU)
+if [ "$(uname -m)" = "arm64" ]; then python -c "import mlx_whisper" 2>/dev/null || pip install -q mlx-whisper; fi
 pip install -q -U yt-dlp 2>/dev/null
 python -u collect_tiktok_search_threads.py --check >/dev/null 2>&1 || { echo "!!! Проверка кода не прошла:"; python -u collect_tiktok_search_threads.py --check; read -p "Enter"; exit 1; }
 [ -f openrouter_key.txt ] || echo "!!! Нет openrouter_key.txt — слайды каруселей не будут расшифрованы (остальное пойдёт)."
