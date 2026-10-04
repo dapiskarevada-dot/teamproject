@@ -49,11 +49,17 @@ def frames(video, out_dir, n=5):
         print(f"  кадры {out_dir.name}: {exc}", flush=True)
 
 
+IMPERSONATE = ""
+
+
 def download(url, folder, cookies):
     import yt_dlp
     folder.mkdir(parents=True, exist_ok=True)
     opts = {"format": "best[ext=mp4]/best", "outtmpl": str(folder / "video.%(ext)s"), "quiet": True, "no_warnings": True,
             "noplaylist": True, "retries": 3, "http_headers": {"Referer": "https://www.tiktok.com/"}}
+    if IMPERSONATE:
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        opts["impersonate"] = ImpersonateTarget.from_str(IMPERSONATE)
     if cookies:
         opts["cookiefile"] = cookies
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -65,14 +71,19 @@ def main():
     ap.add_argument("links"); ap.add_argument("--workers", type=int, default=8); ap.add_argument("--cookies", default="")
     ap.add_argument("--model", default="large-v3"); ap.add_argument("--frames", type=int, default=5)
     ap.add_argument("--limit", type=int, default=0, help="проверка: взять только первые N ссылок")
+    ap.add_argument("--impersonate", default="", help="маскировка TLS под браузер (chrome, safari); нужен pip install curl_cffi")
     ap.add_argument("--sleep", type=float, default=0.0, help="пауза между скачиваниями в каждом потоке, сек (если TikTok начнёт отказывать)")
     a = ap.parse_args()
+    global IMPERSONATE; IMPERSONATE = a.impersonate
     OUT.mkdir(exist_ok=True); (OUT / "frames").mkdir(exist_ok=True)
     done = set()
     jl = OUT / "transcripts.jsonl"
     if jl.exists():
         for line in jl.read_text(encoding="utf-8").splitlines():
-            try: done.add(json.loads(line)["post_id"])
+            try:
+                r = json.loads(line)
+                if not str(r.get("error", "")).startswith("download:"):     # не скачавшиеся — пробуем снова
+                    done.add(r["post_id"])
             except Exception: pass
     rows = [r for r in csv.DictReader(open(a.links, encoding="utf-8")) if r["post_id"] not in done]
     if a.limit:
