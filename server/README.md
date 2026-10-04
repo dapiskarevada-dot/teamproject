@@ -21,3 +21,15 @@
 3. **На Mac**: скачать `out.tgz` в папку `server/` → `СЕРВЕР_ИМПОРТ.command` → таблицы пересоберутся.
    Текст с кадров (API): `./ТРАНСКРИПТЫ.command --no-download` подхватит сохранённые кадры.
 Если сервер получил много `download:` ошибок (TikTok не отдаёт видео с его IP) — нужен `cookies.txt` или другой регион пода.
+
+## Общая (discovery) выборка по ЕГЭ
+
+`links_general.csv` — 27 363 ссылки из `all_posts_dedup.csv` (без каруселей). Поставить в очередь на сервере после школ:
+
+    cd /teamproject && git pull && cd server && nohup bash -c 'while pgrep -f server_transcribe >/dev/null; do sleep 60; done; LINKS=links_general.csv bash run_server.sh' > server_general.log 2>&1 &
+
+Когда готово — `out.tgz` содержит транскрипты и школ, и общей выборки. Склеить с таблицей discovery (на любом компьютере, где лежит `all_posts_dedup.csv`):
+
+    python server/merge_general.py all_posts_dedup.csv out.tgz
+
+→ `ОБЩИЕ_ЕГЭ_с_транскриптами.xlsx`: листы «Все посты», «Про школы» (кандидаты на комментарии/реплаи), «Сводка».
