@@ -16,7 +16,7 @@ echo "=================== ШАГ 0. ОБНОВЛЕНИЕ КОДА ИЗ GITHUB ==
 TMP="$(mktemp -d)"
 if curl -sSL -m 60 -o "$TMP/main.zip" "$REPO_ZIP" 2>/dev/null && unzip -q -o "$TMP/main.zip" -d "$TMP" 2>/dev/null; then
   SRC="$TMP/teamproject-main"
-  cp "$SRC"/*.py . && cp "$SRC"/*.command . && cp "$SRC"/README.md "$SRC"/requirements.txt "$SRC"/schools.txt .
+  cp "$SRC"/*.py . && cp "$SRC"/*.command . && cp "$SRC"/README.md "$SRC"/requirements.txt "$SRC"/schools.txt . && mkdir -p server && cp "$SRC"/server/*.py "$SRC"/server/*.sh "$SRC"/server/*.md "$SRC"/server/*.csv server/
   [ -f schools_plan.txt ] || cp "$SRC/schools_plan.txt" .
   for f in "$SRC"/plan_*.txt; do [ -f "$(basename "$f")" ] || cp "$f" .; done
   chmod +x *.command

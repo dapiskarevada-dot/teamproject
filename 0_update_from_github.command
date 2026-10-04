@@ -10,7 +10,7 @@ echo "=== Скачиваю $URL"
 if ! curl -sSL -m 120 -o "$TMP/main.zip" "$URL"; then echo "Не удалось скачать (нет сети / VPN?)"; read -p "Enter"; exit 1; fi
 unzip -q -o "$TMP/main.zip" -d "$TMP" || { echo "Не удалось распаковать"; read -p "Enter"; exit 1; }
 SRC="$TMP/teamproject-main"
-cp "$SRC"/*.py . && cp "$SRC"/*.command . && cp "$SRC"/README.md "$SRC"/requirements.txt "$SRC"/schools.txt .
+cp "$SRC"/*.py . && cp "$SRC"/*.command . && cp "$SRC"/README.md "$SRC"/requirements.txt "$SRC"/schools.txt . && mkdir -p server && cp "$SRC"/server/*.py "$SRC"/server/*.sh "$SRC"/server/*.md "$SRC"/server/*.csv server/
 # списки запросов/хэштегов копируем только если их ещё нет (свои не перезаписываем)
 # план школ: если своего ещё нет — берём из GitHub; если есть — свежая версия кладётся рядом как schools_plan.txt.new
 if [ -f schools_plan.txt ]; then cp "$SRC/schools_plan.txt" schools_plan.txt.new; else cp "$SRC/schools_plan.txt" .; fi
