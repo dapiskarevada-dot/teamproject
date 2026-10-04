@@ -5,7 +5,7 @@
 Фоксфорд, Foxford
 Сотка
 Вебиум, Webium
-Турбо, TurboEGE
+Турбо ЕГЭ, Турбо, TurboEGE, турбоегэ
 Школково
 Lomonosov School, Ломоносов
 Skysmart, Скайсмарт
@@ -17,4 +17,3 @@ Maximum Education, Максимум
 100балльный репетитор, 100ballnik, Стобалльный репетитор
 Точка Знаний, Tochka Znaniy
 Лектариум, Lektarium
-Turbo ЕГЭ
