@@ -24,7 +24,7 @@
 
 ## Общая (discovery) выборка по ЕГЭ
 
-`links_general.csv` — 27 363 ссылки из `all_posts_dedup.csv` (без каруселей). Поставить в очередь на сервере после школ:
+`links_general.csv` — 21325 ссылок из `all_posts_dedup.csv` за окно 01.10.2025–01.10.2026 (без каруселей; `merge_general.py` тоже режет по окну). Поставить в очередь на сервере после школ:
 
     cd /teamproject && git pull && cd server && nohup bash -c 'while pgrep -f server_transcribe >/dev/null; do sleep 60; done; LINKS=links_general.csv bash run_server.sh' > server_general.log 2>&1 &
 

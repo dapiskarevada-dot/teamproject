@@ -7,7 +7,7 @@
     python server/merge_general.py all_posts_dedup.csv out.tgz          # можно сразу архив с сервера
 
 Результат: ОБЩИЕ_ЕГЭ_с_транскриптами.xlsx
-  лист «Все посты»   — все строки из CSV + «Транскрипт (Whisper)», «Whisper статус», «Школы (упоминания)»,
+  лист «Все посты»   — строки из CSV за окно 01.10.2025–01.10.2026 + «Транскрипт (Whisper)», «Whisper статус», «Школы (упоминания)»,
                        «Школ упомянуто», «Промокод», «Сравнение школ»
   лист «Про школы»   — только строки, где упомянута хотя бы одна школа из schools.txt
                        (описание / хэштеги / субтитры / Whisper / автор) — кандидаты на комментарии и реплаи
@@ -27,6 +27,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 XL_MAX = 32000
+SINCE, UNTIL = "2025-10-01", "2026-10-01"     # окно, как у переписи школ; строки вне окна отбрасываются
 csv.field_size_limit(10**9)
 
 TEXT_FIELDS = ("description", "hashtags", "subtitle_text", "transcript_whisper", "slides_text", "slides_schools",
@@ -83,8 +84,9 @@ def main():
     import pandas as pd
     schools = load_schools()
     trans = load_transcripts(tr)
-    rows = list(csv.DictReader(open(src, encoding="utf-8-sig")))
-    print(f"постов в CSV: {len(rows)}, транскриптов с сервера: {len(trans)}")
+    rows_all = list(csv.DictReader(open(src, encoding="utf-8-sig")))
+    rows = [r for r in rows_all if SINCE <= (r.get("create_time") or "")[:10] <= UNTIL]
+    print(f"постов в CSV: {len(rows_all)}, в окне {SINCE}..{UNTIL}: {len(rows)}, транскриптов с сервера: {len(trans)}")
     per_school = Counter(); cmp_n = promo_n = 0
     for r in rows:
         t, st = trans.get(str(r["post_id"]), ("", "нет"))
