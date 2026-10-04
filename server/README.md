@@ -9,7 +9,7 @@
    Загрузить `links.csv` (и `cookies.txt`) в эту папку (через Jupyter/файловый менеджер пода или `scp`), затем:
    Сначала проверка скачивания на 30 роликах (2–3 минуты):
    ```
-   pip install -q faster-whisper yt-dlp av numpy pillow && python server_transcribe.py links.csv --limit 30 --workers 4
+   pip install -q -U faster-whisper yt-dlp curl_cffi av numpy pillow && python server_transcribe.py links.csv --dl-test "https://www.tiktok.com/@umschoolofficial/video/7644467684544957717" --impersonate chrome   # какой путь скачивания работает (web / api / tikwm)
    ```
    Если в конце «не скачалось всего: 0–3» — запускать всё:
    ```

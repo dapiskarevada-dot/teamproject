@@ -7,9 +7,9 @@
 set -e
 cd "$(dirname "$0")"
 apt-get update -qq && apt-get install -y -qq ffmpeg >/dev/null 2>&1 || true
-pip install -q faster-whisper yt-dlp av numpy pillow curl_cffi
+pip install -q -U faster-whisper yt-dlp av numpy pillow curl_cffi
 nvidia-smi | head -12
 COOK=""; [ -f cookies.txt ] && COOK="--cookies cookies.txt"
 IMP="${IMPERSONATE:-chrome}"
-python -u server_transcribe.py "${LINKS:-links.csv}" --workers 8 --impersonate "$IMP" $COOK 2>&1 | tee -a server.log
+python -u server_transcribe.py "${LINKS:-links.csv}" --workers 8 --impersonate "$IMP" --dl "${DL:-auto}" $COOK 2>&1 | tee -a server.log
 tar czf out.tgz out && echo "Готово: out.tgz (скачать на Mac и запустить server/import_transcripts.py out.tgz)"

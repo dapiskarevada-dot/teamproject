@@ -52,18 +52,66 @@ def frames(video, out_dir, n=5):
 IMPERSONATE = ""
 
 
-def download(url, folder, cookies):
+def _ydl(url, folder, cookies, extractor_args=None):
     import yt_dlp
-    folder.mkdir(parents=True, exist_ok=True)
     opts = {"format": "best[ext=mp4]/best", "outtmpl": str(folder / "video.%(ext)s"), "quiet": True, "no_warnings": True,
-            "noplaylist": True, "retries": 3, "http_headers": {"Referer": "https://www.tiktok.com/"}}
+            "noplaylist": True, "retries": 2, "http_headers": {"Referer": "https://www.tiktok.com/"}}
     if IMPERSONATE:
         from yt_dlp.networking.impersonate import ImpersonateTarget
         opts["impersonate"] = ImpersonateTarget.from_str(IMPERSONATE)
     if cookies:
         opts["cookiefile"] = cookies
+    if extractor_args:
+        opts["extractor_args"] = extractor_args
     with yt_dlp.YoutubeDL(opts) as ydl:
         return Path(ydl.prepare_filename(ydl.extract_info(url, download=True)))
+
+
+_tikwm_lock = threading.Lock(); _tikwm_last = [0.0]
+
+
+def _tikwm(url, folder):
+    """Запасной путь: сторонний сервис tikwm.com отдаёт прямую ссылку на mp4 (сам ходит в TikTok). ~1 запрос/с."""
+    import urllib.request, urllib.parse
+    with _tikwm_lock:                       # не чаще 1 запроса в секунду на весь процесс
+        wait = 1.1 - (time.time() - _tikwm_last[0])
+        if wait > 0: time.sleep(wait)
+        _tikwm_last[0] = time.time()
+    req = urllib.request.Request("https://www.tikwm.com/api/?" + urllib.parse.urlencode({"url": url, "hd": 1}),
+                                 headers={"User-Agent": "Mozilla/5.0"})
+    d = json.loads(urllib.request.urlopen(req, timeout=60).read().decode("utf-8"))
+    if d.get("code") != 0 or not d.get("data"):
+        raise RuntimeError(f"tikwm: {d.get('msg') or d}")
+    play = d["data"].get("hdplay") or d["data"].get("play")
+    if not play:
+        raise RuntimeError("tikwm: нет ссылки на видео (возможно, карусель)")
+    if play.startswith("/"):
+        play = "https://www.tikwm.com" + play
+    out = folder / "video.mp4"
+    req = urllib.request.Request(play, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=300) as r, open(out, "wb") as f:
+        shutil.copyfileobj(r, f)
+    if out.stat().st_size < 10_000:
+        raise RuntimeError("tikwm: файл пустой")
+    return out
+
+
+DL_MODE = "auto"
+API_ARGS = {"tiktok": {"api_hostname": ["api16-normal-c-useast1a.tiktokv.com"], "app_info": ["7355728856979392262"]}}
+
+
+def download(url, folder, cookies):
+    """Цепочка: yt-dlp (сайт) -> yt-dlp (мобильный API TikTok) -> tikwm. Режим --dl выбирает один путь."""
+    folder.mkdir(parents=True, exist_ok=True)
+    steps = {"web": lambda: _ydl(url, folder, cookies), "api": lambda: _ydl(url, folder, cookies, API_ARGS), "tikwm": lambda: _tikwm(url, folder)}
+    order = ["web", "api", "tikwm"] if DL_MODE == "auto" else [DL_MODE]
+    errs = []
+    for name in order:
+        try:
+            return steps[name]()
+        except Exception as exc:
+            errs.append(f"{name}: {str(exc)[:120]}")
+    raise RuntimeError(" | ".join(errs))
 
 
 def main():
@@ -72,9 +120,20 @@ def main():
     ap.add_argument("--model", default="large-v3"); ap.add_argument("--frames", type=int, default=5)
     ap.add_argument("--limit", type=int, default=0, help="проверка: взять только первые N ссылок")
     ap.add_argument("--impersonate", default="", help="маскировка TLS под браузер (chrome, safari); нужен pip install curl_cffi")
+    ap.add_argument("--dl", default="auto", choices=["auto", "web", "api", "tikwm"], help="путь скачивания: auto = сайт -> мобильный API -> tikwm")
+    ap.add_argument("--dl-test", default="", help="быстрая проверка: скачать одну ссылку и выйти (без Whisper)")
     ap.add_argument("--sleep", type=float, default=0.0, help="пауза между скачиваниями в каждом потоке, сек (если TikTok начнёт отказывать)")
     a = ap.parse_args()
-    global IMPERSONATE; IMPERSONATE = a.impersonate
+    global IMPERSONATE, DL_MODE; IMPERSONATE = a.impersonate; DL_MODE = a.dl
+    if a.dl_test:
+        for name in (["web", "api", "tikwm"] if a.dl == "auto" else [a.dl]):
+            t0 = time.time(); DL_MODE = name
+            try:
+                v = download(a.dl_test, TMP / "dl_test", a.cookies)
+                print(f"{name:6} OK  {v.stat().st_size // 1024} КБ за {time.time() - t0:.1f} с"); v.unlink()
+            except Exception as exc:
+                print(f"{name:6} ОШИБКА {str(exc)[:200]}")
+        return 0
     OUT.mkdir(exist_ok=True); (OUT / "frames").mkdir(exist_ok=True)
     done = set()
     jl = OUT / "transcripts.jsonl"
@@ -99,7 +158,7 @@ def main():
                 v = download(r["url"], TMP / r["post_id"], a.cookies)
                 q.put((r["post_id"], v))
             except Exception as exc:
-                q.put((r["post_id"], None, str(exc)[:200]))
+                q.put((r["post_id"], None, str(exc)[:400]))
             if a.sleep:
                 time.sleep(a.sleep)
 
