@@ -64,6 +64,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("links"); ap.add_argument("--workers", type=int, default=8); ap.add_argument("--cookies", default="")
     ap.add_argument("--model", default="large-v3"); ap.add_argument("--frames", type=int, default=5)
+    ap.add_argument("--limit", type=int, default=0, help="проверка: взять только первые N ссылок")
+    ap.add_argument("--sleep", type=float, default=0.0, help="пауза между скачиваниями в каждом потоке, сек (если TikTok начнёт отказывать)")
     a = ap.parse_args()
     OUT.mkdir(exist_ok=True); (OUT / "frames").mkdir(exist_ok=True)
     done = set()
@@ -73,6 +75,8 @@ def main():
             try: done.add(json.loads(line)["post_id"])
             except Exception: pass
     rows = [r for r in csv.DictReader(open(a.links, encoding="utf-8")) if r["post_id"] not in done]
+    if a.limit:
+        rows = rows[: a.limit]
     print(f"К обработке {len(rows)} (уже готово {len(done)})", flush=True)
     from faster_whisper import WhisperModel
     model = WhisperModel(a.model, device="cuda", compute_type="float16")
@@ -85,6 +89,8 @@ def main():
                 q.put((r["post_id"], v))
             except Exception as exc:
                 q.put((r["post_id"], None, str(exc)[:200]))
+            if a.sleep:
+                time.sleep(a.sleep)
 
     chunks = [rows[i::a.workers] for i in range(a.workers)]
     ths = [threading.Thread(target=worker, args=(c,), daemon=True) for c in chunks if c]
@@ -121,7 +127,8 @@ def main():
         fout.write(json.dumps(rec, ensure_ascii=False) + "\n"); fout.flush(); n += 1
         if n % 10 == 0:
             print(f"[{n}/{len(rows)}] {n / ((time.monotonic() - t0) / 60):.1f}/мин | {rec.get('text', '')[:70]}", flush=True)
-    print("Готово:", n, "-> out/transcripts.jsonl и out/frames/", flush=True)
+    fails = sum(1 for line in jl.read_text(encoding="utf-8").splitlines() if '"error": "download:' in line)
+    print(f"Готово: {n} -> out/transcripts.jsonl и out/frames/ | не скачалось всего: {fails}", flush=True)
 
 
 if __name__ == "__main__":

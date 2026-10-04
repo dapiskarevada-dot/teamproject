@@ -7,9 +7,15 @@
    git clone https://github.com/dapiskarevada-dot/teamproject.git && cd teamproject/server
    ```
    Загрузить `links.csv` (и `cookies.txt`) в эту папку (через Jupyter/файловый менеджер пода или `scp`), затем:
+   Сначала проверка скачивания на 30 роликах (2–3 минуты):
+   ```
+   pip install -q faster-whisper yt-dlp av numpy pillow && python server_transcribe.py links.csv --limit 30 --workers 4
+   ```
+   Если в конце «не скачалось всего: 0–3» — запускать всё:
    ```
    bash run_server.sh
    ```
+   Если не скачалось большинство — положить `cookies.txt` (с Mac, `КУКИ.command`) и повторить проверку; не помогло — сменить регион пода (EU/US).
    Темп на RTX 4090: ~10–20 роликов/мин (large-v3, beam 5). Прерывать можно — повторный запуск продолжит.
    В конце появится `out.tgz`.
 3. **На Mac**: скачать `out.tgz` в папку `server/` → `СЕРВЕР_ИМПОРТ.command` → таблицы пересоберутся.
