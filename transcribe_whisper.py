@@ -212,7 +212,7 @@ def transcribe_dir(root: Path = DEFAULT_ROOT, post_ids=None, model_name=DEFAULT_
             continue
         v = find_video(d)
         cache = d / "transcript.whisper.json"
-        if cache.exists() and not force:
+        if cache.exists() and cache.stat().st_size > 2 and not force:
             c = json.loads(cache.read_text(encoding="utf-8"))
             out[d.name] = {"text": c.get("text", ""), "duration": c.get("duration"), "seconds": c.get("seconds"),
                            "model": c.get("model"), "source": "whisper" if c.get("text") else "whisper: речи нет", "error": ""}
@@ -270,7 +270,8 @@ def watch(root: Path, model_name: str, stop_file: Path, only_sample=True, interv
         for d in sorted(posts_dir.glob("*")):
             if ids and d.name not in ids:
                 continue
-            if find_video(d) and not (d / "transcript.whisper.json").exists():
+            c = d / "transcript.whisper.json"
+            if find_video(d) and not (c.exists() and c.stat().st_size > 2):
                 todo.append(d.name)
         if todo:
             print(f"Whisper watch: в очереди {len(todo)}", flush=True)

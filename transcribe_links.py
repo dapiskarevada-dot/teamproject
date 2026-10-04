@@ -28,6 +28,14 @@ import time
 from pathlib import Path
 
 MEDIA = Path("cases") / "tiktok_media" / "raw" / "posts"
+
+
+def has_transcript(post_id: str) -> bool:
+    f = MEDIA / post_id / "transcript.whisper.json"
+    try:
+        return f.exists() and f.stat().st_size > 2
+    except Exception:
+        return False
 TMP = Path("cases") / "tiktok_media" / "tmp_links"
 
 
@@ -115,7 +123,7 @@ def main():
 
 def run_pass(a, tw, targets):
     """Один проход по всем целям. Возвращает 0, если всё расшифровано, иначе число оставшихся."""
-    todo = [(i, u) for i, u in targets if not (MEDIA / i / "transcript.whisper.json").exists()]
+    todo = [(i, u) for i, u in targets if not has_transcript(i)]
     print(f"Роликов: {len(targets)}, уже расшифровано {len(targets) - len(todo)}, в работе {len(todo)}", flush=True)
     if not todo:
         return 0
@@ -220,7 +228,7 @@ def run_pass(a, tw, targets):
     if ocr_pool is not None:
         print("Жду, пока доработает текст с кадров...", flush=True)
         ocr_pool.shutdown(wait=True)
-    left = sum(1 for i, _ in targets if not (MEDIA / i / "transcript.whisper.json").exists())
+    left = sum(1 for i, _ in targets if not has_transcript(i))
     print(f"\nПроход завершён: {stats} | без транскрипта осталось {left} (видео ещё не скачаны)", flush=True)
     return left
 
