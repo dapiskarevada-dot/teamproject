@@ -92,6 +92,8 @@ def main():
     ap.add_argument("--workers", type=int, default=4, help="параллельных скачиваний")
     ap.add_argument("--frames", type=int, default=5, help="кадров сохранить для текста с экрана (0 = не сохранять)")
     ap.add_argument("--screen-text", choices=["on", "off"], default="on", help="текст с кадров через API (нужен openrouter_key.txt)")
+    ap.add_argument("--wait", action="store_true", help="не выходить: ждать, пока видео докачает ГЛУБИНА.command, и расшифровывать по мере появления")
+    ap.add_argument("--no-download", action="store_true", help="не пробовать yt-dlp, только уже скачанные видео")
     a = ap.parse_args()
     if sys.platform.startswith("win"):
         try:
@@ -101,6 +103,18 @@ def main():
 
     import transcribe_whisper as tw
     targets = load_targets(a.all, a.ids_file or None)
+    while True:
+        rc = run_pass(a, tw, targets)
+        if not a.wait or rc == 0:
+            return 0
+        print("Жду новые видео (60 с)... Ctrl+C или закрыть окно, чтобы остановить.", flush=True)
+        time.sleep(60)
+        if a.wait:
+            a.no_download = True       # в режиме ожидания повторно yt-dlp не дёргаем
+
+
+def run_pass(a, tw, targets):
+    """Один проход по всем целям. Возвращает 0, если всё расшифровано, иначе число оставшихся."""
     todo = [(i, u) for i, u in targets if not (MEDIA / i / "transcript.whisper.json").exists()]
     print(f"Роликов: {len(targets)}, уже расшифровано {len(targets) - len(todo)}, в работе {len(todo)}", flush=True)
     if not todo:
@@ -135,20 +149,28 @@ def main():
     stats = {"dl_ok": 0, "dl_fail": 0, "tr_ok": 0, "tr_empty": 0, "tr_fail": 0}
     lock = threading.Lock()
 
+    dl_state = {"consec_fail": 0, "disabled": a.no_download}
+
     def worker(items):
         for pid, url in items:
             d = MEDIA / pid
             v = tw.find_video(d)
             if not v:
+                if dl_state["disabled"]:
+                    continue
                 try:
                     v = download(url, TMP / pid)
-                    with lock: stats["dl_ok"] += 1
+                    with lock:
+                        stats["dl_ok"] += 1; dl_state["consec_fail"] = 0
                 except Exception as exc:
-                    with lock: stats["dl_fail"] += 1
-                    print(f"  {pid}: не скачалось ({str(exc)[:90]})", flush=True)
-                    (d).mkdir(parents=True, exist_ok=True)
-                    (d / "transcript.whisper.json").write_text(json.dumps({"text": "", "segments": [], "error": f"download: {str(exc)[:200]}"}, ensure_ascii=False), encoding="utf-8")
-                    continue
+                    with lock:
+                        stats["dl_fail"] += 1; dl_state["consec_fail"] += 1
+                        if dl_state["consec_fail"] >= 15 and not dl_state["disabled"]:
+                            dl_state["disabled"] = True
+                            print("  yt-dlp: 15 отказов подряд — TikTok не отдаёт видео напрямую; дальше беру только файлы, скачанные ГЛУБИНА.command", flush=True)
+                    if stats["dl_fail"] <= 15:
+                        print(f"  {pid}: не скачалось ({str(exc)[:90]})", flush=True)
+                    continue      # ошибку НЕ запоминаем: при следующем запуске попробуем снова
             q.put((pid, v))
 
     n = max(1, a.workers)
@@ -198,8 +220,9 @@ def main():
     if ocr_pool is not None:
         print("Жду, пока доработает текст с кадров...", flush=True)
         ocr_pool.shutdown(wait=True)
-    print("\nГотово:", stats, flush=True)
-    return 0
+    left = sum(1 for i, _ in targets if not (MEDIA / i / "transcript.whisper.json").exists())
+    print(f"\nПроход завершён: {stats} | без транскрипта осталось {left} (видео ещё не скачаны)", flush=True)
+    return left
 
 
 if __name__ == "__main__":
