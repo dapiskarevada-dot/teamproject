@@ -26,7 +26,7 @@
 
 `links_general.csv` — 21325 ссылок из `all_posts_dedup.csv` за окно 01.10.2025–01.10.2026 (без каруселей; `merge_general.py` тоже режет по окну). Поставить в очередь на сервере после школ:
 
-    cd /teamproject && git pull && cd server && nohup bash -c 'while pgrep -f '[s]erver_transcribe.py' >/dev/null; do sleep 60; done; LINKS=links_general.csv bash run_server.sh' > server_general.log 2>&1 &
+    cd /teamproject && git pull && cd server && nohup bash -c 'while pgrep -f "[s]erver_transcribe.py" >/dev/null; do sleep 60; done; LINKS=links_general.csv bash run_server.sh' > server_general.log 2>&1 &
 
 Когда готово — `out.tgz` содержит транскрипты и школ, и общей выборки. Склеить с таблицей discovery (на любом компьютере, где лежит `all_posts_dedup.csv`):
 
