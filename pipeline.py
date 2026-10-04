@@ -511,6 +511,29 @@ def build_all_schools_workbook(results):
     if not parts:
         return None
     posts = pd.concat([r[1] for r in parts], ignore_index=True)
+    # ОДНА ТАБЛИЦА: пост встречается один раз; школы, в чьих сборах он найден, — списком
+    posts["ID поста"] = posts["ID поста"].astype(str)
+    schools_by_id = posts.groupby("ID поста")["Школа (план)"].apply(lambda x: "; ".join(sorted(set(x))))
+    posts = posts.drop_duplicates("ID поста", keep="first").copy()
+    posts["Школа (план)"] = posts["ID поста"].map(schools_by_id)
+    posts = posts.rename(columns={"Школа (план)": "Школы (план)"})
+    # статус Whisper по каждому посту
+    def wstatus(row):
+        if row.get("Тип поста") == "photo":
+            return "карусель (слайды)"
+        pid = str(row["ID поста"]); d = MEDIA_ROOT / "raw" / "posts" / pid
+        t = d / "transcript.whisper.json"
+        if t.exists() and t.stat().st_size > 2:
+            try:
+                j = json.loads(t.read_text(encoding="utf-8"))
+                return "есть речь" if j.get("text") else ("ошибка" if j.get("error") else "речи нет")
+            except Exception:
+                return "ошибка"
+        if any(d.glob("video.*")):
+            return "видео есть, не расшифровано"
+        return "видео не скачано"
+    posts["Whisper статус"] = posts.apply(wstatus, axis=1)
+    wst = posts.groupby(posts["Школы (план)"].str.split("; ").str[0])["Whisper статус"].value_counts().unstack(fill_value=0).reset_index().rename(columns={"Школы (план)": "Школа"})
     comments = pd.concat([r[2] for r in parts if not r[2].empty], ignore_index=True) if any(not r[2].empty for r in parts) else pd.DataFrame({"ID поста": []})
     sv = []
     for r in parts:
@@ -524,6 +547,8 @@ def build_all_schools_workbook(results):
         posts.to_excel(w, sheet_name="Посты", index=False)
         comments.to_excel(w, sheet_name="Комментарии и реплаи", index=False)
         pd.DataFrame(sv).to_excel(w, sheet_name="Сводка по школам", index=False)
+        wst.to_excel(w, sheet_name="Whisper статус", index=False)
+        print("\nWHISPER:"); print(wst.to_string(index=False))
         cv = []
         for r in parts:
             short = r[1]["Школа (план)"].iloc[0]
