@@ -105,7 +105,8 @@ def main():
     src, tr = Path(sys.argv[1]), Path(sys.argv[2])
     out = Path(sys.argv[3]) if len(sys.argv) > 3 else Path("ОБЩИЕ_ЕГЭ_с_транскриптами.xlsx")
     import pandas as pd
-    schools = load_schools()
+    sys.path.insert(0, str(ROOT))
+    from school_match import find_schools, summarize, author_school
     trans = load_transcripts(tr)
     screen = load_screen(tr)
     rows_all = list(csv.DictReader(open(src, encoding="utf-8-sig")))
@@ -121,8 +122,15 @@ def main():
         sc, ss, sp = screen.get(str(r["post_id"]), ("", "", ""))
         r["Текст на экране / слайдах"] = sc; r["Школы на экране"] = ss; r["Промо на экране"] = sp
         blob = " ".join(str(r.get(k) or "") for k in TEXT_FIELDS).lower() + " " + t.lower() + " " + " ".join((sc, ss, sp)).lower()
-        found = [n for n, al in schools.items() if any(re.search(r"(?<![a-zа-яё0-9])" + re.escape(a), blob) for a in al)]
-        r["Школы (упоминания)"] = "; ".join(found)
+        flds = {k: r.get(k) for k in TEXT_FIELDS if r.get(k)}
+        flds.update({"transcript_whisper": t, "screen_text": sc, "screen_schools": ss,
+                     "author_username": r.get("author_username"), "author_bio": r.get("author_bio") or r.get("author_signature")})
+        names, forms, weak = summarize(find_schools(flds))
+        found = [x for x in names.split("; ") if x]
+        r["Школы (упоминания)"] = names
+        r["Школы: как написано [поле, тип]"] = forms
+        r["Школы только по искажению/контексту (проверить)"] = weak
+        r["Автор — известный препод/амбассадор"] = author_school(r.get("author_username") or "")
         r["Школ упомянуто"] = len(found)
         r["Промокод"] = "да" if PROMO_RE.search(blob) else ""
         r["Сравнение школ"] = "да" if (len(found) >= 2 or (found and COMPARE_RE.search(blob))) else ""
@@ -133,8 +141,9 @@ def main():
     # старые пустые колонки из CSV убираем, новые текстовые ставим сразу после описания — чтобы их было видно
     df = df.drop(columns=[c for c in ("transcript_whisper", "transcript_source", "caption", "url") if c in df.columns])
     front = ["post_id", "canonical_url", "author_username", "create_time", "description", "Транскрипт (Whisper)", "Whisper статус",
-             "Текст на экране / слайдах", "subtitle_text", "slides_text", "Школы (упоминания)", "Школ упомянуто", "Сравнение школ",
-             "Промокод", "Школы на экране", "Промо на экране"]
+             "Текст на экране / слайдах", "subtitle_text", "slides_text", "Школы (упоминания)", "Школ упомянуто",
+             "Школы: как написано [поле, тип]", "Школы только по искажению/контексту (проверить)", "Автор — известный препод/амбассадор",
+             "Сравнение школ", "Промокод", "Школы на экране", "Промо на экране"]
     front = [c for c in front if c in df.columns]
     df = df[front + [c for c in df.columns if c not in front]]
     for c in df.columns:

@@ -208,28 +208,25 @@ def all_school_aliases():
     return out
 
 
-def schools_in_fields(f: dict, aliases_by_school):
-    import re
-    blob = " ".join(str(f.get(k) or "") for k in ("description", "hashtags", "subtitle_text", "transcript_whisper",
-                                                   "slides_text", "slides_schools", "screen_text", "screen_schools", "author_username", "author_bio")).lower()
-    found = []
-    for name, al in aliases_by_school.items():
-        if any(re.search(r"(?<![a-zа-яё0-9])" + re.escape(a), blob) for a in al):
-            found.append(name)
-    return found
+def schools_in_fields(f: dict, aliases_by_school=None):
+    """Школы, упомянутые в посте, по словарю school_aliases.tsv (бренд, ASR-искажения, слова с контекстом)."""
+    from school_match import post_hits
+    return list(dict.fromkeys(h["school"] for h in post_hits(f) if h["kind"] != "author"))
 
 
 def choose_sample(school, posts: dict, n: int, seed: int = 42):
     """Стратифицированная выборка для глубины: все посты с >=2 школами + пропорционально из страт
     official / ambassador (автор с >=5 постами о школе) / ugc. n=0 — все посты."""
     import random, re
-    aliases = all_school_aliases()
-    short = school["name"].split(",")[0].strip()
+    from school_match import canon
+    aliases = None
+    own_canon = canon(school["name"])
+    short = own_canon
     own = [a.strip().lower() for a in school["name"].split(",") if a.strip() and len(a.strip()) >= 4]
     def mentions_own(f):
         blob = " ".join(str(f.get(k) or "") for k in ("description", "hashtags", "subtitle_text", "transcript_whisper", "slides_text",
                                                        "slides_schools", "screen_text", "author_username", "author_nickname", "author_bio")).lower()
-        return any(re.search(r"(?<![a-zа-яё0-9])" + re.escape(a), blob) for a in own)
+        return own_canon in schools_in_fields(f) or any(re.search(r"(?<![a-zа-яё0-9])" + re.escape(a), blob) for a in own)
     relevant = {pid: f for pid, f in posts.items() if mentions_own(f)}
     print(f"[{short}] постов всего {len(posts)}, с упоминанием школы {len(relevant)} — выборка только из них", flush=True)
     posts = relevant
@@ -418,10 +415,12 @@ def build_final_workbook(school_name: str, case_dir: Path):
     apply_caches(posts)
     sample_file = case_dir / "sample_ids.txt"
     sample = {l.strip() for l in sample_file.read_text(encoding="utf-8").splitlines() if l.strip()} if sample_file.exists() else set()
-    aliases_all = all_school_aliases()
+    from school_match import post_hits, summarize, author_school, canon
     for pid, f in posts.items():
         f["in_sample"] = bool(sample) and pid in sample
-        f["schools_mentioned"] = "; ".join(schools_in_fields(f, aliases_all))
+        names, forms, weak = summarize(post_hits(f))
+        f["schools_mentioned"], f["schools_forms"], f["schools_weak"] = names, forms, weak
+        f["author_school_known"] = author_school(f.get("author_username") or "")
     rows = list(posts.values())
     if not rows:
         print(f"[{short}] нет данных для итоговой книги"); return None
@@ -432,7 +431,7 @@ def build_final_workbook(school_name: str, case_dir: Path):
     def mentions(r):
         blob = " ".join(str(r.get(k) or "") for k in ("description", "hashtags", "slides_text", "slides_schools", "transcript_whisper", "subtitle_text",
                                                        "screen_text", "author_username", "author_nickname", "author_bio")).lower()
-        return any(al in blob for al in aliases)
+        return any(al in blob for al in aliases) or canon(school_name) in (r.get("schools_mentioned") or "").split("; ")
     mention_col = f"Упомянута школа ({short})" if len(aliases) <= 3 else "Упомянута какая-либо школа из списка"
     dfp.insert(0, "Школа (план)", short)
     dfp[mention_col] = [mentions(r) for r in rows]
