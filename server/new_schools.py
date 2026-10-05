@@ -64,6 +64,9 @@ def tikwm(path, params, retries=4):
                 except Exception:
                     j = None
             if j is None:
+                if r.status_code == 403:      # Cloudflare «Just a moment» — повторять бесполезно
+                    print(f"  tikwm {path}: закрыт Cloudflare (403) — беру из TikTok напрямую", flush=True)
+                    return {}
                 raise RuntimeError(f"не JSON, HTTP {r.status_code}: {r.text[:80]!r}")
             if j.get("code") == 0:
                 return j.get("data") or {}
@@ -92,6 +95,96 @@ def paged(path, params, max_items, key="videos"):
             break
         cursor = nc
     return out[:max_items]
+
+
+# ---- запасной источник: веб-API самого TikTok (без входа), если tikwm закрыт Cloudflare ----
+WEB_H = {"Referer": "https://www.tiktok.com/", "Accept": "application/json, text/plain, */*"}
+_web = None
+
+
+def web(path, params):
+    global _web
+    if _web is None:
+        from curl_cffi import requests as cr
+        _web = cr.Session(impersonate="chrome")
+        try:
+            _web.get("https://www.tiktok.com/explore", timeout=30)     # куки ttwid/msToken
+        except Exception:
+            pass
+    for i in range(3):
+        try:
+            r = _web.get("https://www.tiktok.com" + path, params=dict(params, aid="1988"), headers=WEB_H, timeout=40)
+            if r.status_code == 200 and r.text.strip():
+                return r.json()
+            err = f"HTTP {r.status_code}, {len(r.text)} байт"
+        except Exception as exc:
+            err = f"{type(exc).__name__}: {str(exc)[:80]}"
+        time.sleep(2 * (i + 1))
+    print(f"  tiktok {path}: {err}", flush=True)
+    return {}
+
+
+def web_item(it):
+    """элемент веб-API TikTok -> формат tikwm (для to_row)."""
+    au, st, mu = it.get("author") or {}, it.get("stats") or {}, it.get("music") or {}
+    imgs = [((im.get("imageURL") or {}).get("urlList") or [""])[0] for im in ((it.get("imagePost") or {}).get("images") or [])]
+    return {"video_id": it.get("id"), "title": it.get("desc"), "create_time": it.get("createTime"),
+            "author": {"unique_id": au.get("uniqueId"), "nickname": au.get("nickname")},
+            "play_count": st.get("playCount"), "digg_count": st.get("diggCount"), "comment_count": st.get("commentCount"),
+            "share_count": st.get("shareCount"), "collect_count": st.get("collectCount"),
+            "duration": (it.get("video") or {}).get("duration"), "music_info": {"title": mu.get("title"), "original": mu.get("original")},
+            "images": [u for u in imgs if u]}
+
+
+def web_paged(path, params, max_items, key="itemList", cur="cursor"):
+    out, c = [], 0
+    while len(out) < max_items:
+        d = web(path, dict(params, count=30, **{cur: c}))
+        items = d.get(key) or d.get("item_list") or []
+        if key == "data":       # поиск: [{type, item}]
+            items = [x.get("item") for x in items if isinstance(x, dict) and x.get("item")]
+        out += [web_item(x) for x in items]
+        nc = d.get("cursor")
+        if not items or not (d.get("hasMore") or d.get("has_more")) or nc in (None, c, str(c)):
+            break
+        c = int(nc)
+    return out[:max_items]
+
+
+TIKWM_OK = {"search": True, "hashtag": True, "user": True}
+
+
+def get_search(q, n):
+    if TIKWM_OK["search"]:
+        v = paged("/api/feed/search", {"keywords": q, "HD": 0}, n)
+        if v:
+            return v
+    v = web_paged("/api/search/item/full/", {"keyword": q}, n, key="item_list")
+    if not v:
+        v = web_paged("/api/search/general/full/", {"keyword": q}, n, key="data")
+    return v
+
+
+def get_hashtag(name, n):
+    info = tikwm("/api/challenge/info", {"challenge_name": name}) or {}
+    cid = info.get("id") or (info.get("challenge") or {}).get("id")
+    if not cid:
+        d = web("/api/challenge/detail/", {"challengeName": name})
+        cid = ((d.get("challengeInfo") or {}).get("challenge") or {}).get("id")
+    if not cid:
+        return []
+    v = paged("/api/challenge/posts", {"challenge_id": cid}, n) if TIKWM_OK["hashtag"] else []
+    return v or web_paged("/api/challenge/item_list/", {"challengeID": cid}, n)
+
+
+def get_user(u, n):
+    if TIKWM_OK["user"]:
+        v = paged("/api/user/posts", {"unique_id": u}, n)
+        if v:
+            return v
+    d = web("/api/user/detail/", {"uniqueId": u})
+    sec = ((d.get("userInfo") or {}).get("user") or {}).get("secUid")
+    return web_paged("/api/post/item_list/", {"secUid": sec}, n) if sec else []
 
 
 def read_plan(path):
@@ -178,15 +271,13 @@ def discover(a):
             if tag in done_src:
                 continue
             if kind == "q":
-                vids = paged("/api/feed/search", {"keywords": val, "HD": 0}, a.max_per_query)
+                vids = get_search(val, a.max_per_query)
                 lab = f"{sch}: запрос «{val}»"
             elif kind == "h":
-                info = tikwm("/api/challenge/info", {"challenge_name": val}) or {}
-                cid = info.get("id") or (info.get("challenge") or {}).get("id")
-                vids = paged("/api/challenge/posts", {"challenge_id": cid}, a.max_per_hashtag) if cid else []
+                vids = get_hashtag(val, a.max_per_hashtag)
                 lab = f"{sch}: #{val}"
             else:
-                vids = paged("/api/user/posts", {"unique_id": val}, a.max_per_account)
+                vids = get_user(val, a.max_per_account)
                 lab = f"{sch}: @{val}"
             n = add(vids, lab)
             print(f"  {lab}: получено {len(vids)}, новых в окне {n} | всего {len(rows)}", flush=True)
@@ -207,7 +298,7 @@ def discover(a):
         tag = f"author|{u}"
         if tag in done_src:
             continue
-        vids = paged("/api/user/posts", {"unique_id": u}, a.max_per_author)
+        vids = get_user(u, a.max_per_author)
         keep = []
         for v in vids:       # из ленты берём только посты, где есть какая-либо школа
             if any(h["kind"] != "author" for h in find_schools({"d": v.get("title") or ""})):
@@ -326,11 +417,10 @@ def main():
     ap.add_argument("--probe", action="store_true", help="проверить поиск tikwm и выйти")
     a = ap.parse_args()
     if a.probe:
-        for path, p, key in (("/api/feed/search", {"keywords": "егэхаб"}, "videos"), ("/api/challenge/info", {"challenge_name": "egehub"}, None),
-                             ("/api/user/posts", {"unique_id": "profimatika"}, "videos")):
-            d = tikwm(path, dict(p, count=10, cursor=0))
-            print(path, p, "->", (f"{len(d.get(key) or [])} постов, пример: {((d.get(key) or [{}])[0].get('title') or '')[:60]}"
-                                  if key else f"id={(d or {}).get('id')}") if d else "ПУСТО/ОШИБКА", flush=True)
+        for name, fn, arg in (("поиск «егэхаб»", get_search, "егэхаб"), ("хэштег #egehub", get_hashtag, "egehub"),
+                              ("аккаунт @profimatika", get_user, "profimatika")):
+            v = fn(arg, 10)
+            print(f"{name}: {len(v)} постов" + (f", пример: {(v[0].get('title') or '')[:60]}" if v else "  <- НЕ РАБОТАЕТ"), flush=True)
         return
     steps = set(x.strip() for x in a.steps.split(","))
     t0 = time.monotonic()
