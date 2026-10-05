@@ -10,7 +10,8 @@
   лист «Все посты»   — строки из CSV за окно 01.10.2025–01.10.2026 + «Транскрипт (Whisper)», «Whisper статус», «Школы (упоминания)»,
                        «Школ упомянуто», «Промокод», «Сравнение школ»
   лист «Про школы»   — только строки, где упомянута хотя бы одна школа из schools.txt
-                       (описание / хэштеги / субтитры / Whisper / автор) — кандидаты на комментарии и реплаи
+                       (описание / хэштеги / субтитры / Whisper / текст на экране и слайдах / автор)
+  Текст с картинок берётся из screen_text.jsonl (внутри архива или рядом с файлом транскриптов). — кандидаты на комментарии и реплаи
   лист «Сводка»      — сколько постов упоминают каждую школу, сколько со сравнением, промокодом
 Работает на Mac и Windows, нужны pandas + openpyxl. Школы берутся из schools.txt рядом с репозиторием.
 """
@@ -76,6 +77,28 @@ def load_transcripts(path: Path):
     return res
 
 
+def load_screen(tr: Path):
+    """post_id -> (text, schools, promo) из screen_text.jsonl: внутри архива или файлом рядом с транскриптами."""
+    lines = []
+    if tr.suffix == ".tgz":
+        with tarfile.open(tr) as t:
+            m = [x for x in t.getmembers() if x.name.endswith("screen_text.jsonl")]
+            if m:
+                lines = t.extractfile(m[0]).read().decode("utf-8").splitlines()
+    for cand in (tr.parent / "screen_text.jsonl", Path("server") / "screen_text.jsonl"):
+        if not lines and cand.exists():
+            lines = cand.read_text(encoding="utf-8").splitlines()
+    res = {}
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        if not r.get("error"):
+            res[str(r["post_id"])] = (r.get("text") or "", "; ".join(r.get("schools") or []), r.get("promo") or "")
+    return res
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__); return 2
@@ -84,9 +107,10 @@ def main():
     import pandas as pd
     schools = load_schools()
     trans = load_transcripts(tr)
+    screen = load_screen(tr)
     rows_all = list(csv.DictReader(open(src, encoding="utf-8-sig")))
     rows = [r for r in rows_all if SINCE <= (r.get("create_time") or "")[:10] <= UNTIL]
-    print(f"постов в CSV: {len(rows_all)}, в окне {SINCE}..{UNTIL}: {len(rows)}, транскриптов с сервера: {len(trans)}")
+    print(f"постов в CSV: {len(rows_all)}, в окне {SINCE}..{UNTIL}: {len(rows)}, транскриптов с сервера: {len(trans)}, текст с картинок: {len(screen)}")
     per_school = Counter(); cmp_n = promo_n = 0
     for r in rows:
         t, st = trans.get(str(r["post_id"]), ("", "нет"))
@@ -94,7 +118,9 @@ def main():
             t, st = r["transcript_whisper"], "речь (старый)"
         r["Транскрипт (Whisper)"] = t
         r["Whisper статус"] = st if r.get("post_type") != "photo" else "карусель"
-        blob = " ".join(str(r.get(k) or "") for k in TEXT_FIELDS).lower() + " " + t.lower()
+        sc, ss, sp = screen.get(str(r["post_id"]), ("", "", ""))
+        r["Текст на экране / слайдах"] = sc; r["Школы на экране"] = ss; r["Промо на экране"] = sp
+        blob = " ".join(str(r.get(k) or "") for k in TEXT_FIELDS).lower() + " " + t.lower() + " " + " ".join((sc, ss, sp)).lower()
         found = [n for n, al in schools.items() if any(re.search(r"(?<![a-zа-яё0-9])" + re.escape(a), blob) for a in al)]
         r["Школы (упоминания)"] = "; ".join(found)
         r["Школ упомянуто"] = len(found)

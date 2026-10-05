@@ -38,3 +38,12 @@
 Под 1 (текущий): `pkill -f server_transcribe.py; cd /teamproject && git pull && cd server && LINKS=links_general_a.csv nohup bash run_server.sh > server_general.log 2>&1 &`
 Под 2 (новый, тот же шаблон RTX 4090): `cd / && git clone https://github.com/dapiskarevada-dot/teamproject.git && cd /teamproject/server && LINKS=links_general_b.csv nohup bash run_server.sh > server.log 2>&1 &`
 С каждого пода скачать `out/transcripts.jsonl` (переименовать в transcripts_a.jsonl / transcripts_b.jsonl), склеить `cat transcripts_a.jsonl transcripts_b.jsonl > transcripts.jsonl` и отдать в `merge_general.py` / `import_transcripts.py`.
+
+## Текст с картинок: ролики без речи + карусели
+
+На поде, после Whisper (кадры лежат в `out/frames/`). Ключ — `openrouter_key.txt` в `/teamproject/` (загрузить через Jupyter).
+
+    cd /teamproject && git pull && cd server && pip install -q requests pillow && python server_screen_ocr.py --limit 20   # проба
+    nohup python server_screen_ocr.py > screen.log 2>&1 &                                                                  # всё
+
+Результат `out/screen_text.jsonl` → скачать рядом с транскриптами: `ОБЩИЕ_ТАБЛИЦА.command` и `СЕРВЕР_ИМПОРТ.command` подхватят его сами.

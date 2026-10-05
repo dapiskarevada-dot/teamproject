@@ -22,5 +22,18 @@ for line in (src / "transcripts.jsonl").read_text(encoding="utf-8").splitlines()
     if fr.exists() and not (d / "frames").exists():
         shutil.copytree(fr, d / "frames")
     n += 1
+m = 0
+st = src / "screen_text.jsonl"
+if not st.exists() and Path("server/screen_text.jsonl").exists():
+    st = Path("server/screen_text.jsonl")
+if st.exists():
+    for line in st.read_text(encoding="utf-8").splitlines():
+        try: r = json.loads(line)
+        except Exception: continue
+        if r.get("error"): continue
+        d = MEDIA / str(r["post_id"]); d.mkdir(parents=True, exist_ok=True)
+        (d / f"frames.{r.get('model', 'google/gemini-2.5-flash').replace('/', '_')}.vlm.json").write_text(json.dumps(r, ensure_ascii=False, indent=1), encoding="utf-8")
+        m += 1
+    print(f"Текст с картинок (ролики без речи и карусели): {m}")
 print(f"Импортировано транскриптов: {n}, не скачалось на сервере: {e}. Дальше: ТАБЛИЦЫ.command (и ТРАНСКРИПТЫ.command для текста с кадров).")
 if tmp: shutil.rmtree(tmp, ignore_errors=True)

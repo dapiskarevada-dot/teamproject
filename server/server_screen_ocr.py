@@ -8,7 +8,7 @@
 
 Ключ: файл openrouter_key.txt в /teamproject/ (загрузить через Jupyter) или переменная OPENROUTER_API_KEY.
 
-    python server_screen_ocr.py                 # все ролики без речи
+    python server_screen_ocr.py                 # ролики без речи + карусели
     python server_screen_ocr.py --all           # все ролики с кадрами
     python server_screen_ocr.py --limit 20      # проба
 """
@@ -28,6 +28,7 @@ def main():
     ap.add_argument("--all", action="store_true", help="все ролики с кадрами, а не только без речи")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--carousels", default=str(HERE / "links_carousels.csv"), help="csv post_id,url каруселей; '' = не делать")
     a = ap.parse_args()
     from ocr_vlm import ask_model, parse_json, load_key, load_schools, DEFAULT_MODEL, DEFAULT_BASE
     from video_frames_ocr import FRAME_PROMPT, dedupe_frames
@@ -57,13 +58,50 @@ def main():
                     done.add(r["post_id"])
             except Exception:
                 pass
-    todo = [p for p in targets if p not in done and (OUT / "frames" / p).is_dir()]
+    todo = [(p, "video") for p in targets if p not in done and (OUT / "frames" / p).is_dir()]
+    car = {}
+    if a.carousels and Path(a.carousels).exists():
+        import csv
+        car = {r["post_id"]: r["url"] for r in csv.DictReader(open(a.carousels, encoding="utf-8")) if r["post_id"] not in done}
+        todo = [(p, "carousel") for p in car] + todo
     if a.limit:
         todo = todo[: a.limit]
-    print(f"Роликов-кандидатов {len(targets)}, уже готово {len(done)}, в работе {len(todo)} (модель {DEFAULT_MODEL})", flush=True)
+    print(f"Роликов без речи с кадрами: {sum(1 for _, k in todo if k == 'video')}, каруселей: {sum(1 for _, k in todo if k == 'carousel')}, "
+          f"уже готово {len(done)} (модель {DEFAULT_MODEL})", flush=True)
 
-    def one(pid):
-        frames = dedupe_frames(sorted((OUT / "frames" / pid).glob("*.jpg")))
+    tik_lock = threading.Lock(); tik_last = [0.0]
+
+    def slides(pid):
+        """Слайды карусели через tikwm (не чаще 1 запроса в секунду)."""
+        import urllib.request, urllib.parse
+        with tik_lock:
+            w = 1.1 - (time.time() - tik_last[0])
+            if w > 0: time.sleep(w)
+            tik_last[0] = time.time()
+        req = urllib.request.Request("https://www.tikwm.com/api/?" + urllib.parse.urlencode({"url": car[pid]}), headers={"User-Agent": "Mozilla/5.0"})
+        d = json.loads(urllib.request.urlopen(req, timeout=60).read().decode("utf-8"))
+        imgs = (d.get("data") or {}).get("images") or []
+        folder = OUT / "slides" / pid; folder.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for i, u in enumerate(imgs[:20]):
+            f = folder / f"slide_{i:02d}.jpg"
+            if not f.exists():
+                with urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"}), timeout=60) as r:
+                    f.write_bytes(r.read())
+            paths.append(f)
+        return paths
+
+    def one(item):
+        pid, kind = item
+        if kind == "carousel":
+            try:
+                frames = slides(pid)
+            except Exception as exc:
+                return {"post_id": pid, "kind": kind, "text": "", "error": f"slides: {str(exc)[:150]}"}
+            if not frames:
+                return {"post_id": pid, "kind": kind, "text": "", "error": "slides: нет картинок"}
+        else:
+            frames = dedupe_frames(sorted((OUT / "frames" / pid).glob("*.jpg")))
         texts, sch, promos, errs = [], [], [], 0
         for f in frames:
             try:
@@ -80,7 +118,7 @@ def main():
             p = (d.get("promo") or "").strip()
             if p and p not in promos:
                 promos.append(p)
-        rec = {"post_id": pid, "model": DEFAULT_MODEL, "frames": len(frames), "text": "\n".join(texts)[:16000],
+        rec = {"post_id": pid, "kind": kind, "model": DEFAULT_MODEL, "frames": len(frames), "text": "\n".join(texts)[:16000],
                "schools": sch, "promo": "; ".join(promos)}
         if frames and errs == len(frames):
             rec["error"] = "api"
@@ -94,7 +132,7 @@ def main():
                 fout.write(json.dumps(rec, ensure_ascii=False) + "\n"); fout.flush(); n += 1
                 if n % 20 == 0 or n == len(todo):
                     rate = n / max(1e-6, (time.monotonic() - t0) / 60)
-                    print(f"[{n}/{len(todo)}] {rate:.0f}/мин | {rec['text'][:70].replace(chr(10), ' / ')}", flush=True)
+                    print(f"[{n}/{len(todo)}] {rate:.0f}/мин | {rec.get('kind')} | {rec['text'][:70].replace(chr(10), ' / ')}", flush=True)
     print(f"Готово: {n} -> out/screen_text.jsonl", flush=True)
 
 
