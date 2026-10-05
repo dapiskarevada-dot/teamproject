@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-НА СЕРВЕРЕ: комментарии + ответы к постам через yt-dlp (мобильный API TikTok, без аккаунтов и браузера).
+НА СЕРВЕРЕ: комментарии + ответы к постам без аккаунтов: веб-API TikTok (curl_cffi), запасной — tikwm.
+    python server_comments.py --probe <ссылка>   # проверить, какой источник работает
 
 Какие посты: comment_plan.csv (make_comment_list.py --all: уровни A → B → C → D), иначе comment_urls.txt,
 иначе все из label_input.jsonl.gz. Идём строго по порядку плана, чтобы важное собралось первым.
@@ -66,55 +67,112 @@ def targets(limit, only=None):
     return (out[:limit] if limit else out), src
 
 
+# ---- источники комментариев (yt-dlp больше не умеет комментарии TikTok) ----
+_tikwm_lock = threading.Lock()
+_tikwm_last = [0.0]
+_sess = threading.local()
+
+
+def _session(imp):
+    if not hasattr(_sess, "s"):
+        from curl_cffi import requests as cr
+        _sess.s = cr.Session(impersonate=imp or "chrome")
+    return _sess.s
+
+
+def _get_json(url, a, params, headers=None):
+    r = _session(a.impersonate).get(url, params=params, headers=headers or {}, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}")
+    try:
+        return r.json()
+    except Exception:
+        raise RuntimeError(f"не JSON ({len(r.text)} байт)")
+
+
+WEB_H = {"Referer": "https://www.tiktok.com/", "Accept": "application/json, text/plain, */*"}
+
+
+def _web_page(a, pid, cursor, cid=None):
+    if cid:
+        j = _get_json("https://www.tiktok.com/api/comment/list/reply/", a,
+                      {"aid": "1988", "item_id": pid, "comment_id": cid, "count": 50, "cursor": cursor}, WEB_H)
+    else:
+        j = _get_json("https://www.tiktok.com/api/comment/list/", a,
+                      {"aid": "1988", "aweme_id": pid, "count": 50, "cursor": cursor}, WEB_H)
+    if "comments" not in j:
+        raise RuntimeError(f"нет comments, status_code={j.get('status_code')} {str(j.get('status_msg', ''))[:60]}")
+    return j.get("comments") or [], int(j.get("cursor") or 0), bool(j.get("has_more"))
+
+
+def _tikwm_page(a, pid, cursor, cid=None):
+    with _tikwm_lock:      # бесплатный tikwm: ~1 запрос в секунду
+        w = 1.1 - (time.monotonic() - _tikwm_last[0])
+        if w > 0:
+            time.sleep(w)
+        _tikwm_last[0] = time.monotonic()
+    if cid:
+        j = _get_json("https://www.tikwm.com/api/comment/reply", a, {"comment_id": cid, "count": 50, "cursor": cursor})
+    else:
+        j = _get_json("https://www.tikwm.com/api/comment/list", a, {"url": pid, "count": 50, "cursor": cursor})
+    if j.get("code") != 0:
+        raise RuntimeError(f"tikwm: {str(j.get('msg'))[:80]}")
+    d = j.get("data") or {}
+    return d.get("comments") or [], int(d.get("cursor") or 0), bool(d.get("hasMore") or d.get("has_more"))
+
+
+def _norm(c, pid, parent):
+    u = c.get("user") or {}
+    uid = u.get("unique_id") or u.get("uniqueId") or ""
+    return {"id": str(c.get("cid") or c.get("id") or c.get("comment_id") or ""), "parent": parent,
+            "text": c.get("text"), "timestamp": c.get("create_time"),
+            "like_count": c.get("digg_count"), "reply_count": c.get("reply_comment_total") or c.get("reply_total"),
+            "author": u.get("nickname"), "author_id": u.get("uid") or u.get("id"),
+            "author_url": f"https://www.tiktok.com/@{uid}" if uid else "",
+            "is_favorited": bool(c.get("is_author_digged")), "author_is_uploader": None}
+
+
 def fetch(pid, url, a, lim):
     """Комментарии одного поста с ограничениями. Возвращает (список, статус)."""
-    import yt_dlp
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "getcomments": False}
-    if a.impersonate:
-        from yt_dlp.networking.impersonate import ImpersonateTarget
-        opts["impersonate"] = ImpersonateTarget.from_str(a.impersonate)
     max_roots, max_total, max_sec = lim
-    got, roots, t0 = [], 0, time.monotonic()
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ie = ydl.get_info_extractor("TikTok")
-        gen = None
-        for name in ("_get_comments", "_comment_iter"):
-            if hasattr(ie, name):
-                try:
-                    gen = getattr(ie, name)(pid)
-                    break
-                except TypeError:
-                    continue
-        if gen is None:      # запасной путь: все комментарии разом, потом обрезка
-            try:
-                ydl.params["getcomments"] = True
-                info = ydl.extract_info(url, download=False)
-                gen = iter(info.get("comments") or [])
-            except Exception as exc:
-                return [], f"ошибка после 0: {type(exc).__name__}: {str(exc)[:120]}"
-        status = "ok"
+    order = {"web": ["web"], "tikwm": ["tikwm"]}.get(a.source, ["web", "tikwm"])
+    errors = []
+    for src in order:
+        page = _web_page if src == "web" else _tikwm_page
+        got, t0, status = [], time.monotonic(), "ok"
         try:
-            for c in gen:
-                if not isinstance(c, dict):
-                    continue
-                is_root = c.get("parent") in (None, "root", pid)
-                if is_root:
-                    if roots >= max_roots:
-                        status = f"лимит {max_roots} верхних"; break
-                    roots += 1
-                got.append(c)
-                if len(got) >= max_total:
-                    status = f"лимит {max_total} всего"; break
+            roots, cursor, more = [], 0, True
+            while more and len(roots) < max_roots:
+                cs, cursor, more = page(a, pid, cursor)
+                if not cs:
+                    break
+                roots += [_norm(c, pid, "root") for c in cs]
                 if time.monotonic() - t0 > max_sec:
                     status = f"лимит {max_sec} с"; break
+            if len(roots) >= max_roots:
+                status = f"лимит {max_roots} верхних"
+            got = roots[:max_roots][:max_total]
+            # ответы: сначала к самым залайканным веткам
+            for r in sorted(got[:], key=lambda x: -(x.get("like_count") or 0)):
+                if not r.get("reply_count") or len(got) >= max_total or time.monotonic() - t0 > max_sec:
+                    continue
+                cursor, more = 0, True
+                while more and len(got) < max_total and time.monotonic() - t0 <= max_sec:
+                    cs, cursor, more = page(a, pid, cursor, r["id"])
+                    if not cs:
+                        break
+                    got += [_norm(c, pid, r["id"]) for c in cs][: max_total - len(got)]
+            if len(got) >= max_total:
+                status = f"лимит {max_total} всего"
+            elif time.monotonic() - t0 > max_sec:
+                status = f"лимит {max_sec} с"
+            return got, f"{src} {status}"
         except Exception as exc:
-            status = f"ошибка после {len(got)}: {type(exc).__name__}: {str(exc)[:120]}"
-        finally:
-            try:
-                gen.close()
-            except Exception:
-                pass
-    return got, status
+            if got or src == order[-1]:
+                tail = "; ".join(errors + [f"{src}: {type(exc).__name__}: {str(exc)[:100]}"])
+                return got, (f"{src} ошибка после {len(got)}: " + tail) if got else f"ошибка после 0: {tail}"
+            errors.append(f"{src}: {str(exc)[:80]}")
+    return [], "ошибка после 0: нет источника"
 
 
 def build_xlsx(posts):
@@ -137,7 +195,7 @@ def build_xlsx(posts):
                          "Автор (ник)": (c.get("author_url") or "").rstrip("/").split("@")[-1] or c.get("author"),
                          "Автор (имя)": c.get("author"), "ID автора": c.get("author_id"),
                          "Время (UTC)": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(ts)) if ts else "",
-                         "Текст": c.get("text"), "Лайки": c.get("like_count"),
+                         "Текст": c.get("text"), "Лайки": c.get("like_count"), "Ответов (по данным TikTok)": c.get("reply_count"),
                          "Автор поста лайкнул": c.get("is_favorited"), "Ответ автора поста": c.get("author_is_uploader")})
     df = pd.DataFrame(rows)
     if len(df):
@@ -162,9 +220,20 @@ def main():
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--sleep", type=float, default=1.0, help="пауза между постами в каждом потоке, сек")
     ap.add_argument("--impersonate", default="chrome")
+    ap.add_argument("--source", default="auto", choices=["auto", "web", "tikwm"],
+                    help="auto: веб-API TikTok, при ошибке — tikwm (медленный, ~1 запрос/с)")
+    ap.add_argument("--probe", default="", help="ссылка или ID поста: проверить источники и выйти")
     ap.add_argument("--xlsx-only", action="store_true")
     a = ap.parse_args()
     CDIR.mkdir(parents=True, exist_ok=True)
+    if a.probe:
+        import re as _re
+        m = _re.search(r"(\d{15,})", a.probe); pid = m.group(1) if m else a.probe
+        for src in ("web", "tikwm"):
+            a.source = src
+            got, st = fetch(pid, a.probe, a, (20, 40, 60))
+            print(f"{src}: {len(got)} комментариев | {st} | пример: {(got[0].get('text') or '')[:60] if got else '-'}", flush=True)
+        return
     lims = parse_limits(a.limits)
     only = {x.strip().upper() for x in a.only_tiers.split(",") if x.strip()} or None
     posts, src = targets(a.limit, only)
