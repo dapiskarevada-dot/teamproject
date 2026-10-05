@@ -122,6 +122,7 @@ def main():
     ap.add_argument("--impersonate", default="", help="маскировка TLS под браузер (chrome, safari); нужен pip install curl_cffi")
     ap.add_argument("--dl", default="auto", choices=["auto", "web", "api", "tikwm"], help="путь скачивания: auto = сайт -> мобильный API -> tikwm")
     ap.add_argument("--dl-test", default="", help="быстрая проверка: скачать одну ссылку и выйти (без Whisper)")
+    ap.add_argument("--gpu-threads", type=int, default=2, help="потоков Whisper: пока один считает VAD на CPU, другой занимает GPU")
     ap.add_argument("--batch", type=int, default=16, help="батч Whisper (BatchedInferencePipeline); 1 = обычный режим")
     ap.add_argument("--sleep", type=float, default=0.0, help="пауза между скачиваниями в каждом потоке, сек (если TikTok начнёт отказывать)")
     a = ap.parse_args()
@@ -170,50 +171,62 @@ def main():
     q = queue.Queue(maxsize=a.workers * 2); stop = object()
 
     def worker(items):
+        """Скачивание + кадры + декодирование звука — всё на CPU в потоках загрузки, GPU-потокам остаётся только Whisper."""
         for r in items:
+            pid = r["post_id"]
             try:
-                v = download(r["url"], TMP / r["post_id"], a.cookies)
-                q.put((r["post_id"], v))
+                v = download(r["url"], TMP / pid, a.cookies)
             except Exception as exc:
-                q.put((r["post_id"], None, str(exc)[:400]))
+                q.put((pid, None, None, "download: " + str(exc)[:400])); continue
+            try:
+                if a.frames: frames(v, OUT / "frames" / pid, a.frames)
+                audio = load_audio(v)
+                q.put((pid, v, audio, None))
+            except Exception as exc:
+                q.put((pid, v, None, f"{type(exc).__name__}: {str(exc)[:200]}"))
             if a.sleep:
                 time.sleep(a.sleep)
 
     chunks = [rows[i::a.workers] for i in range(a.workers)]
     ths = [threading.Thread(target=worker, args=(c,), daemon=True) for c in chunks if c]
     for t in ths: t.start()
-    threading.Thread(target=lambda: ([t.join() for t in ths], q.put(stop)), daemon=True).start()
+    threading.Thread(target=lambda: ([t.join() for t in ths], [q.put(stop) for _ in range(a.gpu_threads)]), daemon=True).start()
 
-    fout = jl.open("a", encoding="utf-8"); n = 0; t0 = time.monotonic()
-    while True:
-        item = q.get()
-        if item is stop: break
-        pid, v = item[0], item[1]
-        rec = {"post_id": pid, "model": a.model}
-        if v is None:
-            rec.update({"text": "", "error": "download: " + item[2]})
-        else:
-            try:
-                if a.frames: frames(v, OUT / "frames" / pid, a.frames)
-                audio = load_audio(v)
-                if audio.size == 0:
-                    rec.update({"text": "", "segments": [], "note": "нет аудио"})
-                else:
+    fout = jl.open("a", encoding="utf-8"); state = {"n": 0}; t0 = time.monotonic(); lock = threading.Lock()
+
+    def consumer():
+        while True:
+            item = q.get()
+            if item is stop: break
+            pid, v, audio, err = item
+            rec = {"post_id": pid, "model": a.model}
+            if err:
+                rec.update({"text": "", "error": err})
+            elif audio.size == 0:
+                rec.update({"text": "", "segments": [], "note": "нет аудио"})
+            else:
+                try:
                     segs, info = run_whisper(audio)
                     out, parts = [], []
-                    for s in segs:
-                        t = s.text.strip(); low = t.lower()
-                        if not t or any(h in low for h in HALLU) or s.no_speech_prob > 0.75 or s.avg_logprob < -1.2 or s.compression_ratio > 2.4:
+                    for sg in segs:
+                        t = sg.text.strip(); low = t.lower()
+                        if not t or any(h in low for h in HALLU) or sg.no_speech_prob > 0.75 or sg.avg_logprob < -1.2 or sg.compression_ratio > 2.4:
                             continue
-                        out.append({"start": round(s.start, 2), "end": round(s.end, 2), "text": t}); parts.append(t)
+                        out.append({"start": round(sg.start, 2), "end": round(sg.end, 2), "text": t}); parts.append(t)
                     rec.update({"text": " ".join(parts)[:32000], "segments": out, "duration": round(info.duration, 1), "language": info.language})
-            except Exception as exc:
-                rec.update({"text": "", "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
-            finally:
+                except Exception as exc:
+                    rec.update({"text": "", "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+            if v is not None:
                 shutil.rmtree(v.parent, ignore_errors=True)
-        fout.write(json.dumps(rec, ensure_ascii=False) + "\n"); fout.flush(); n += 1
-        if n % 10 == 0:
-            print(f"[{n}/{len(rows)}] {n / ((time.monotonic() - t0) / 60):.1f}/мин | {rec.get('text', '')[:70]}", flush=True)
+            with lock:
+                fout.write(json.dumps(rec, ensure_ascii=False) + "\n"); fout.flush(); state["n"] += 1; n = state["n"]
+            if n % 10 == 0:
+                print(f"[{n}/{len(rows)}] {n / ((time.monotonic() - t0) / 60):.1f}/мин | {rec.get('text', '')[:70]}", flush=True)
+
+    cons = [threading.Thread(target=consumer, daemon=True) for _ in range(a.gpu_threads)]
+    for t in cons: t.start()
+    for t in cons: t.join()
+    n = state["n"]
     fails = sum(1 for line in jl.read_text(encoding="utf-8").splitlines() if '"error": "download:' in line)
     print(f"Готово: {n} -> out/transcripts.jsonl и out/frames/ | не скачалось всего: {fails}", flush=True)
 
