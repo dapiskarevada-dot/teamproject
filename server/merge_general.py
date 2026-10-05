@@ -130,6 +130,13 @@ def main():
             per_school[n] += 1
         cmp_n += r["Сравнение школ"] == "да"; promo_n += r["Промокод"] == "да"
     df = pd.DataFrame(rows)
+    # старые пустые колонки из CSV убираем, новые текстовые ставим сразу после описания — чтобы их было видно
+    df = df.drop(columns=[c for c in ("transcript_whisper", "transcript_source", "caption", "url") if c in df.columns])
+    front = ["post_id", "canonical_url", "author_username", "create_time", "description", "Транскрипт (Whisper)", "Whisper статус",
+             "Текст на экране / слайдах", "subtitle_text", "slides_text", "Школы (упоминания)", "Школ упомянуто", "Сравнение школ",
+             "Промокод", "Школы на экране", "Промо на экране"]
+    front = [c for c in front if c in df.columns]
+    df = df[front + [c for c in df.columns if c not in front]]
     for c in df.columns:
         if df[c].dtype == object:
             df[c] = df[c].map(lambda x: x[:XL_MAX] if isinstance(x, str) and len(x) > XL_MAX else x)
