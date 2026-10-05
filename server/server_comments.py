@@ -134,7 +134,8 @@ def _norm(c, pid, parent):
 
 def fetch(pid, url, a, lim):
     """Комментарии одного поста с ограничениями. Возвращает (список, статус)."""
-    max_roots, max_total, max_sec = lim
+    BIG = 10 ** 9      # 0 = без ограничения
+    max_roots, max_total, max_sec = (x if x else BIG for x in lim)
     order = {"web": ["web"], "tikwm": ["tikwm"]}.get(a.source, ["web", "tikwm"])
     errors = []
     for src in order:
@@ -143,8 +144,9 @@ def fetch(pid, url, a, lim):
         try:
             roots, cursor, more = [], 0, True
             while more and len(roots) < max_roots:
+                prev = cursor
                 cs, cursor, more = page(a, pid, cursor)
-                if not cs:
+                if not cs or cursor == prev:
                     break
                 roots += [_norm(c, pid, "root") for c in cs]
                 if time.monotonic() - t0 > max_sec:
@@ -158,8 +160,9 @@ def fetch(pid, url, a, lim):
                     continue
                 cursor, more = 0, True
                 while more and len(got) < max_total and time.monotonic() - t0 <= max_sec:
+                    prev = cursor
                     cs, cursor, more = page(a, pid, cursor, r["id"])
-                    if not cs:
+                    if not cs or cursor == prev:
                         break
                     got += [_norm(c, pid, r["id"]) for c in cs][: max_total - len(got)]
             if len(got) >= max_total:
@@ -214,6 +217,8 @@ def build_xlsx(posts):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--all-comments", action="store_true",
+                    help="все комментарии и все ответы со всех постов, без лимитов; посты, собранные раньше с лимитом, догружаются")
     ap.add_argument("--limits", default="", help='например "A=300/2000/300,D=20/100/45" (верхних/всего/секунд)')
     ap.add_argument("--only-tiers", default="", help="например A,B")
     ap.add_argument("--skip-ids", default="comments_done_mac_ids.txt", help="файл с post_id, которые уже собраны (пропустить)")
@@ -235,6 +240,8 @@ def main():
             print(f"{src}: {len(got)} комментариев | {st} | пример: {(got[0].get('text') or '')[:60] if got else '-'}", flush=True)
         return
     lims = parse_limits(a.limits)
+    if a.all_comments:
+        lims = {k: (0, 0, 0) for k in lims}
     only = {x.strip().upper() for x in a.only_tiers.split(",") if x.strip()} or None
     posts, src = targets(a.limit, only)
     if not a.xlsx_only:
@@ -244,6 +251,8 @@ def main():
                 try:
                     r = json.loads(line)
                     if not any(x in str(r.get("status", "")) for x in ("ошибка после 0", "нет метода")):
+                        if a.all_comments and "лимит" in str(r.get("status", "")):
+                            done.discard(r["post_id"]); continue   # был обрезан лимитом — собрать заново целиком
                         done.add(r["post_id"])
                 except Exception:
                     pass
@@ -259,7 +268,7 @@ def main():
         from collections import Counter
         print(f"Постов ({src}): {len(posts)}, уже собрано на сервере {len(done & {p for p, _, _ in posts})}, "
               f"собрано на Маке (пропуск) {len(skip & {p for p, _, _ in posts})}, в работе {len(todo)} {dict(Counter(t for _, _, t in todo))}\n"
-              f"лимиты (верхних/всего/сек): " + ", ".join(f"{k}={'/'.join(map(str, v))}" for k, v in lims.items() if k), flush=True)
+              + ("лимитов нет: все комментарии и ответы" if a.all_comments else "лимиты (верхних/всего/сек): " + ", ".join(f"{k}={'/'.join(map(str, v))}" for k, v in lims.items() if k)), flush=True)
         lock = threading.Lock(); n = tot = 0; t0 = time.monotonic(); fails = 0
 
         def one(item):
