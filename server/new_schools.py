@@ -190,9 +190,31 @@ def get_user(u, n):
         v = paged("/api/user/posts", {"unique_id": u}, n)
         if v:
             return v
-    d = web("/api/user/detail/", {"uniqueId": u})
-    sec = ((d.get("userInfo") or {}).get("user") or {}).get("secUid")
-    return web_paged("/api/post/item_list/", {"secUid": sec}, n) if sec else []
+    return ytdlp_user(u, n)
+
+
+def ytdlp_user(u, n):
+    """Лента аккаунта через yt-dlp (он сам подписывает запросы к TikTok)."""
+    try:
+        import yt_dlp
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": n, "skip_download": True,
+                "impersonate": ImpersonateTarget.from_str("chrome")}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"https://www.tiktok.com/@{u}", download=False) or {}
+    except Exception as exc:
+        print(f"  yt-dlp @{u}: {type(exc).__name__}: {str(exc)[:100]}", flush=True)
+        return []
+    out = []
+    for e in (info.get("entries") or [])[:n]:
+        if not e or not e.get("id"):
+            continue
+        out.append({"video_id": e.get("id"), "title": e.get("description") or e.get("title") or "",
+                    "create_time": e.get("timestamp"), "author": {"unique_id": e.get("uploader") or u, "nickname": e.get("channel") or ""},
+                    "play_count": e.get("view_count"), "digg_count": e.get("like_count"), "comment_count": e.get("comment_count"),
+                    "share_count": e.get("repost_count"), "collect_count": e.get("save_count"), "duration": e.get("duration"),
+                    "music_info": {"title": e.get("track") or "", "original": None}, "images": []})
+    return out
 
 
 def read_plan(path):
