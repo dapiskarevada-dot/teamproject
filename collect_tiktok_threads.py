@@ -740,12 +740,34 @@ async def run(args):
     summaries = []
     pool = AccountsPool()
 
-    async with await PyTok.from_pool(
-        pool,
-        request_delay=args.request_delay,
-    ) as api:
+    if getattr(args, "skip_collected", False):
+        def done(u):
+            try:
+                pid = parse_tiktok_url(u)["post_id"]
+            except Exception:
+                return False
+            d = args.case_dir / "raw" / "posts" / pid
+            for f in d.glob("thread_*_summary.json") if d.exists() else []:
+                try:
+                    if json.loads(f.read_text(encoding="utf-8")).get("status") == "success":
+                        return True
+                except Exception:
+                    pass
+            return False
+        before = len(urls)
+        urls = [u for u in urls if not done(u)]
+        print(f"Skip already collected: {before - len(urls)}, left: {len(urls)}")
+
+    kw = {"request_delay": args.request_delay}
+    if getattr(args, "account", ""):
+        kw["username"] = args.account
+    async with await PyTok.from_pool(pool, **kw) as api:
         for idx, url in enumerate(urls):
-            summaries.append(await collect_one(api, url, args))
+            try:
+                summaries.append(await collect_one(api, url, args))
+            except Exception as exc:
+                print("POST FAILED:", url, type(exc).__name__, str(exc)[:200])
+                summaries.append({"source_url": url, "status": "error", "error": str(exc)[:300]})
 
             if idx < len(urls) - 1 and args.between_posts_delay > 0:
                 print(
@@ -774,6 +796,8 @@ def main():
         )
     )
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--account", default="", help="username аккаунта из пула pytok (для параллельных потоков)")
+    parser.add_argument("--skip-collected", action="store_true", help="пропускать посты, где уже есть успешный thread_*_summary.json")
     parser.add_argument(
         "--url",
         action="append",
