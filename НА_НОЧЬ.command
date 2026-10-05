@@ -14,7 +14,8 @@ REPO_ZIP="https://github.com/dapiskarevada-dot/teamproject/archive/refs/heads/ma
 
 echo "=================== ШАГ 0. ОБНОВЛЕНИЕ КОДА ИЗ GITHUB ==================="
 TMP="$(mktemp -d)"
-if curl -sSL -m 60 -o "$TMP/main.zip" "$REPO_ZIP" 2>/dev/null && unzip -q -o "$TMP/main.zip" -d "$TMP" 2>/dev/null; then
+curl -sSL -m 60 -o "$TMP/main.zip" "$REPO_ZIP" 2>/dev/null && { ditto -x -k "$TMP/main.zip" "$TMP" 2>/dev/null || unzip -q -o "$TMP/main.zip" -d "$TMP" 2>/dev/null; }
+if [ -f "$TMP/teamproject-main/pipeline.py" ]; then
   SRC="$TMP/teamproject-main"
   cp "$SRC"/*.py . && cp "$SRC"/*.command . && cp "$SRC"/README.md "$SRC"/requirements.txt "$SRC"/schools.txt "$SRC"/school_aliases.tsv . && mkdir -p server && cp "$SRC"/server/*.py "$SRC"/server/*.sh "$SRC"/server/*.md "$SRC"/server/*.csv server/
   [ -f schools_plan.txt ] || cp "$SRC/schools_plan.txt" .
