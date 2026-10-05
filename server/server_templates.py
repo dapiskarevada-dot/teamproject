@@ -83,54 +83,73 @@ def main():
     ap.add_argument("--model", default="ViT-B-32", help="open_clip модель")
     ap.add_argument("--pretrained", default="laion2b_s34b_b79k")
     ap.add_argument("--min-cluster", type=int, default=15, help="минимум картинок в шаблоне")
+    ap.add_argument("--min-samples", type=int, default=5)
+    ap.add_argument("--leaf", action="store_true", help="мелкие однородные кластеры (cluster_selection_method=leaf)")
+    ap.add_argument("--out", default="", help="папка результата (по умолчанию out/templates)")
+    ap.add_argument("--reuse", action="store_true", help="взять готовые embeddings.npy + images.csv из out/templates, без пересчёта")
     ap.add_argument("--sheets", type=int, default=80, help="контактных листов по крупнейшим кластерам")
     a = ap.parse_args()
+    global OUT
+    src_dir = OUT
+    if a.out:
+        OUT = HERE / "out" / a.out
 
-    import numpy as np, torch, open_clip
+    import numpy as np
     from PIL import Image
     roots = [(Path(r), "img") for r in a.root] or [(HERE / "out" / "frames", "video"), (HERE / "out" / "slides", "carousel")]
     OUT.mkdir(parents=True, exist_ok=True); (OUT / "sheets").mkdir(exist_ok=True)
 
     t0 = time.monotonic()
-    items = collect(roots, a.max_per_post)
-    print(f"Картинок после дедупа: {len(items)} ({time.monotonic() - t0:.0f} с)", flush=True)
+    if a.reuse:
+        rows = list(csv.DictReader(open(src_dir / "images.csv", encoding="utf-8")))
+        base = {"video": HERE / "out" / "frames", "carousel": HERE / "out" / "slides"}
+        items = [(r["post_id"], r["kind"], base.get(r["kind"], Path(a.root[0]) if a.root else HERE) / r["post_id"] / r["file"]) for r in rows]
+        emb = np.load(src_dir / "embeddings.npy")
+        print(f"Взято готовое: {len(items)} картинок", flush=True)
+    else:
+        items = collect(roots, a.max_per_post)
+        print(f"Картинок после дедупа: {len(items)} ({time.monotonic() - t0:.0f} с)", flush=True)
 
-    dev = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-    model, _, prep = open_clip.create_model_and_transforms(a.model, pretrained=a.pretrained, device=dev)
-    model.eval()
-    if dev == "cuda":
-        model.half()
-    emb = np.zeros((len(items), model.visual.output_dim), dtype=np.float16)
-    B = 256
+    if not a.reuse:
+        import torch, open_clip
+        dev = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+        model, _, prep = open_clip.create_model_and_transforms(a.model, pretrained=a.pretrained, device=dev)
+        model.eval()
+        if dev == "cuda":
+            model.half()
+        emb = np.zeros((len(items), model.visual.output_dim), dtype=np.float16)
+        B = 256
 
-    def load(it):
-        try:
-            with Image.open(it[2]) as im:
-                return prep(im.convert("RGB"))
-        except Exception:
-            return torch.zeros(3, 224, 224)
+        def load(it):
+            try:
+                with Image.open(it[2]) as im:
+                    return prep(im.convert("RGB"))
+            except Exception:
+                return torch.zeros(3, 224, 224)
 
-    t1 = time.monotonic()
-    with ThreadPoolExecutor(16) as ex, torch.no_grad():
-        for s in range(0, len(items), B):
-            x = torch.stack(list(ex.map(load, items[s:s + B]))).to(dev)
-            if dev == "cuda":
-                x = x.half()
-            f = model.encode_image(x).float()
-            f = f / f.norm(dim=-1, keepdim=True)
-            emb[s:s + len(f)] = f.cpu().numpy().astype(np.float16)
-            if (s // B) % 40 == 0:
-                print(f"  отпечатки {s + len(f)}/{len(items)} | {(s + len(f)) / max(1e-6, time.monotonic() - t1):.0f} картинок/с", flush=True)
-    np.save(OUT / "embeddings.npy", emb)
+        t1 = time.monotonic()
+        with ThreadPoolExecutor(16) as ex, torch.no_grad():
+            for s in range(0, len(items), B):
+                x = torch.stack(list(ex.map(load, items[s:s + B]))).to(dev)
+                if dev == "cuda":
+                    x = x.half()
+                f = model.encode_image(x).float()
+                f = f / f.norm(dim=-1, keepdim=True)
+                emb[s:s + len(f)] = f.cpu().numpy().astype(np.float16)
+                if (s // B) % 40 == 0:
+                    print(f"  отпечатки {s + len(f)}/{len(items)} | {(s + len(f)) / max(1e-6, time.monotonic() - t1):.0f} картинок/с", flush=True)
+        np.save(OUT / "embeddings.npy", emb)
 
     from sklearn.decomposition import PCA
     X = PCA(n_components=32, random_state=0).fit_transform(emb.astype(np.float32))
     try:
         import hdbscan
-        lab = hdbscan.HDBSCAN(min_cluster_size=a.min_cluster, min_samples=5, core_dist_n_jobs=-1).fit_predict(X)
+        lab = hdbscan.HDBSCAN(min_cluster_size=a.min_cluster, min_samples=a.min_samples, core_dist_n_jobs=-1,
+                              cluster_selection_method="leaf" if a.leaf else "eom").fit_predict(X)
     except ImportError:
         from sklearn.cluster import HDBSCAN
-        lab = HDBSCAN(min_cluster_size=a.min_cluster, min_samples=5).fit_predict(X)
+        lab = HDBSCAN(min_cluster_size=a.min_cluster, min_samples=a.min_samples,
+                      cluster_selection_method="leaf" if a.leaf else "eom").fit_predict(X)
     print(f"Кластеров: {lab.max() + 1}, в шуме {int((lab == -1).sum())} из {len(lab)} ({time.monotonic() - t0:.0f} с всего)", flush=True)
 
     with open(OUT / "images.csv", "w", newline="", encoding="utf-8") as f:
