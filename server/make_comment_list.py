@@ -4,8 +4,10 @@
 НА СЕРВЕРЕ, после server_label.py: список постов для сбора комментариев по приоритету.
   A — принижение / переманивание / негатив о школе / сравнение школ (все);
   B — реклама или промокод с упоминанием школы (по просмотрам);
-  C — остальные посты про школы: топ по просмотрам на каждую школу.
+  C — остальные посты про школы: топ по просмотрам на каждую школу;
+  D — (с --all) все остальные посты про школы, включая ещё не размеченные.
     python make_comment_list.py --max 3000 --per-school 100
+    python make_comment_list.py --all          # все посты, порядок A → B → C → D, + comment_plan.csv для server_comments.py
 → comment_urls.txt (по одной ссылке в строке, в порядке приоритета) и comment_list.csv (почему выбран).
 """
 import argparse, csv, gzip, json
@@ -15,6 +17,7 @@ HERE = Path(__file__).resolve().parent
 ap = argparse.ArgumentParser()
 ap.add_argument("--max", type=int, default=3000)
 ap.add_argument("--per-school", type=int, default=100)
+ap.add_argument("--all", action="store_true", help="все посты про школы (уровень D — остальные), без лимита --max")
 a = ap.parse_args()
 posts = {}
 for l in gzip.open(HERE / "label_input.jsonl.gz", "rt", encoding="utf-8"):
@@ -32,7 +35,7 @@ def views(pid):
     try: return float(posts[pid].get("views") or 0)
     except Exception: return 0.0
 
-A, B, C = [], [], {}
+A, B, C, D = [], [], {}, []
 for pid, l in labels.items():
     if pid not in posts or not l.get("relevant"):
         continue
@@ -50,17 +53,28 @@ for pid, l in labels.items():
 A.sort(key=lambda x: -views(x[0])); B.sort(key=lambda x: -views(x[0]))
 Cl = []
 for sch, lst in C.items():
-    Cl += sorted(lst, key=lambda x: -views(x[0]))[: a.per_school]
+    lst = sorted(lst, key=lambda x: -views(x[0]))
+    Cl += lst[: a.per_school]
+    D += [(p, "D", "остальные посты про школы") for p, _, _ in lst[a.per_school:]]
+if a.all:   # посты, которых ещё нет в разметке, тоже берём (уровень D)
+    D += [(p, "D", "не размечен") for p in posts if p not in labels]
+D.sort(key=lambda x: -views(x[0]))
 Cl.sort(key=lambda x: -views(x[0]))
 seen, out = set(), []
-for pid, tier, why in A + B + Cl:
+for pid, tier, why in A + B + Cl + (D if a.all else []):
     if pid in seen: continue
     seen.add(pid); out.append((pid, tier, why))
-out = out[: a.max]
+out = out if a.all else out[: a.max]
 (HERE / "comment_urls.txt").write_text("\n".join(posts[p]["url"] for p, _, _ in out) + "\n", encoding="utf-8")
 with open(HERE / "comment_list.csv", "w", newline="", encoding="utf-8") as f:
     w = csv.writer(f); w.writerow(["post_id", "приоритет", "почему", "просмотры", "автор", "ссылка", "о чём"])
     for p, t, why in out:
-        w.writerow([p, t, why, posts[p].get("views"), posts[p].get("author"), posts[p].get("url"), labels[p].get("summary")])
-print(f"A (конфликт/негатив/сравнение): {len(A)}, B (реклама): {len(B)}, C (топ по школам): {len(Cl)} → в списке {len(out)}")
-print("comment_urls.txt, comment_list.csv")
+        w.writerow([p, t, why, posts[p].get("views"), posts[p].get("author"), posts[p].get("url"), (labels.get(p) or {}).get("summary")])
+with open(HERE / "comment_plan.csv", "w", newline="", encoding="utf-8") as f:
+    w = csv.writer(f); w.writerow(["post_id", "url", "tier"])
+    for p, t, _ in out:
+        w.writerow([p, posts[p]["url"], t])
+from collections import Counter
+print(f"A (конфликт/негатив/сравнение): {len(A)}, B (реклама): {len(B)}, C (топ по школам): {len(Cl)}, D: {len(D) if a.all else 0}"
+      f" → в списке {len(out)} {dict(Counter(t for _, t, _ in out))}")
+print("comment_urls.txt, comment_list.csv, comment_plan.csv")
