@@ -68,7 +68,7 @@ def load_key():
 
 def ask(key, text, retries=4):
     import requests
-    body = {"model": MODEL, "temperature": 0, "max_tokens": 900, "response_format": {"type": "json_object"},
+    body = {"model": MODEL, "temperature": 0, "max_tokens": 2000, "response_format": {"type": "json_object"},
             "reasoning": {"enabled": False},
             "messages": [{"role": "user", "content": text}]}
     last = None
