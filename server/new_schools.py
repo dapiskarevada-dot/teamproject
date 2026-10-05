@@ -154,7 +154,12 @@ def web_paged(path, params, max_items, key="itemList", cur="cursor"):
 TIKWM_OK = {"search": True, "hashtag": True, "user": True}
 
 
+SEARCH_FAILS = [0]
+
+
 def get_search(q, n):
+    if SEARCH_FAILS[0] >= 2:        # поиск недоступен с этого сервера — не тратим время на остальные запросы
+        return None
     if TIKWM_OK["search"]:
         v = paged("/api/feed/search", {"keywords": q, "HD": 0}, n)
         if v:
@@ -162,6 +167,9 @@ def get_search(q, n):
     v = web_paged("/api/search/item/full/", {"keyword": q}, n, key="item_list")
     if not v:
         v = web_paged("/api/search/general/full/", {"keyword": q}, n, key="data")
+    SEARCH_FAILS[0] = 0 if v else SEARCH_FAILS[0] + 1
+    if SEARCH_FAILS[0] == 2:
+        print("  ПОИСК ПО ЗАПРОСАМ НЕДОСТУПЕН с этого сервера — дальше только хэштеги, аккаунты и ленты авторов", flush=True)
     return v
 
 
@@ -273,6 +281,8 @@ def discover(a):
             if kind == "q":
                 vids = get_search(val, a.max_per_query)
                 lab = f"{sch}: запрос «{val}»"
+                if vids is None:          # поиск выключен — не отмечаем запрос сделанным, чтобы добрать позже
+                    continue
             elif kind == "h":
                 vids = get_hashtag(val, a.max_per_hashtag)
                 lab = f"{sch}: #{val}"
@@ -419,7 +429,7 @@ def main():
     if a.probe:
         for name, fn, arg in (("поиск «егэхаб»", get_search, "егэхаб"), ("хэштег #egehub", get_hashtag, "egehub"),
                               ("аккаунт @profimatika", get_user, "profimatika")):
-            v = fn(arg, 10)
+            v = fn(arg, 10) or []
             print(f"{name}: {len(v)} постов" + (f", пример: {(v[0].get('title') or '')[:60]}" if v else "  <- НЕ РАБОТАЕТ"), flush=True)
         return
     steps = set(x.strip() for x in a.steps.split(","))
