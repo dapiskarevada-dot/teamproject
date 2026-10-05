@@ -33,3 +33,8 @@
     python server/merge_general.py all_posts_dedup.csv out.tgz
 
 → `ОБЩИЕ_ЕГЭ_с_транскриптами.xlsx`: листы «Все посты», «Про школы» (кандидаты на комментарии/реплаи), «Сводка».
+
+### Два пода параллельно (вдвое быстрее, цена та же)
+Под 1 (текущий): `pkill -f server_transcribe.py; cd /teamproject && git pull && cd server && LINKS=links_general_a.csv nohup bash run_server.sh > server_general.log 2>&1 &`
+Под 2 (новый, тот же шаблон RTX 4090): `cd / && git clone https://github.com/dapiskarevada-dot/teamproject.git && cd /teamproject/server && LINKS=links_general_b.csv nohup bash run_server.sh > server.log 2>&1 &`
+С каждого пода скачать `out.tgz` (или `tar czf t.tgz out/transcripts.jsonl`) и импортировать оба — `merge_general.py` принимает файлы по очереди (результаты дописываются по post_id).
