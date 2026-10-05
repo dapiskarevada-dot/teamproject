@@ -10,7 +10,7 @@
     python make_comment_list.py --all          # все посты, порядок A → B → C → D, + comment_plan.csv для server_comments.py
 → comment_urls.txt (по одной ссылке в строке, в порядке приоритета) и comment_list.csv (почему выбран).
 """
-import argparse, csv, gzip, json
+import argparse, csv, gzip, json, re
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
@@ -23,7 +23,8 @@ posts = {}
 for l in gzip.open(HERE / "label_input.jsonl.gz", "rt", encoding="utf-8"):
     p = json.loads(l); posts[p["post_id"]] = p
 labels = {}
-for l in (HERE / "out" / "labels.jsonl").read_text(encoding="utf-8").splitlines():
+lab_file = HERE / "out" / "labels.jsonl"
+for l in (lab_file.read_text(encoding="utf-8").splitlines() if lab_file.exists() else []):
     try:
         r = json.loads(l)
         if not r.get("error"):
@@ -56,9 +57,35 @@ for sch, lst in C.items():
     lst = sorted(lst, key=lambda x: -views(x[0]))
     Cl += lst[: a.per_school]
     D += [(p, "D", "остальные посты про школы") for p, _, _ in lst[a.per_school:]]
-if a.all:   # посты, которых ещё нет в разметке, тоже берём (уровень D)
-    D += [(p, "D", "не размечен") for p in posts if p not in labels]
+# Посты без разметки Gemini (кончился баланс и т.п.) — уровень по правилам из текста.
+NEG = re.compile(r"развод|лохотрон|скам|обман|кидал|не покупайте|не советую|не идите|не берите|верните деньги|возврат денег|"
+                 r"разочаров|ужасн|отстой|худш|хуже|кринж|позор|стрем|зря потрат|деньги на ветер|перешл[аи] из|ушл[аи] из|ушел из|"
+                 r"перешел из|сравни|vs|против|рейтинг|тир[- ]?лист|топ онлайн|какую школу|какая школа лучше|слив", re.I)
+PROMO = re.compile(r"промокод|промик|по коду|скидк|реф(ерал)?ьн|записывайся|ссылка в (шапке|био|профиле)", re.I)
+n_rule = 0
+for pid, p in posts.items():
+    if pid in labels:
+        continue
+    n_rule += 1
+    text = " ".join(str(p.get(k) or "") for k in ("desc", "hashtags", "speech", "screen")).lower()
+    found = [x for x in (p.get("found") or "").split("; ") if x]
+    m = NEG.search(text)
+    if len(found) >= 2 or m:
+        A.append((pid, "A", "по правилам: " + ("школ " + str(len(found)) if len(found) >= 2 else "") + (f" «{m.group(0)}»" if m else "")))
+    elif PROMO.search(text):
+        B.append((pid, "B", "по правилам: реклама/промокод"))
+    else:
+        for sch in found[:1] or ["?"]:
+            C.setdefault(sch, []).append((pid, "C", f"по правилам, топ по просмотрам: {sch}"))
+A.sort(key=lambda x: -views(x[0])); B.sort(key=lambda x: -views(x[0]))
+Cl = []; D = []
+for sch, lst in C.items():
+    lst = sorted(lst, key=lambda x: -views(x[0]))
+    Cl += lst[: a.per_school]
+    D += [(p, "D", "остальные посты про школы") for p, _, _ in lst[a.per_school:]]
+Cl.sort(key=lambda x: -views(x[0]))
 D.sort(key=lambda x: -views(x[0]))
+print(f"размечено Gemini: {len(labels)}, уровень по правилам (без разметки): {n_rule}")
 Cl.sort(key=lambda x: -views(x[0]))
 seen, out = set(), []
 for pid, tier, why in A + B + Cl + (D if a.all else []):
