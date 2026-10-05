@@ -224,9 +224,8 @@ def build_xlsx(posts):
         df = df.drop_duplicates(subset=["ID комментария"])
     df.to_csv(HERE / "КОММЕНТАРИИ_сервер.csv", index=False, encoding="utf-8-sig")
     if len(df) < 1_000_000:
-        for c in df.columns:
-            if df[c].dtype == object:
-                df[c] = df[c].map(lambda x: ILLEGAL.sub("", x)[:32000] if isinstance(x, str) else x)
+        for c in df.columns:      # dtype может быть и object, и str (pandas 3) — чистим все текстовые ячейки
+            df[c] = df[c].map(lambda x: ILLEGAL.sub("", x)[:32000] if isinstance(x, str) else x)
         df.to_excel(HERE / "КОММЕНТАРИИ_сервер.xlsx", index=False)
     else:
         print("строк больше миллиона — xlsx не делаю (Excel не вместит), есть csv", flush=True)
