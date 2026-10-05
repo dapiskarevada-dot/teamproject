@@ -154,17 +154,35 @@ def fetch(pid, url, a, lim):
             if len(roots) >= max_roots:
                 status = f"лимит {max_roots} верхних"
             got = roots[:max_roots][:max_total]
-            # ответы: сначала к самым залайканным веткам
-            for r in sorted(got[:], key=lambda x: -(x.get("like_count") or 0)):
-                if not r.get("reply_count") or len(got) >= max_total or time.monotonic() - t0 > max_sec:
-                    continue
+            # ответы: сначала к самым залайканным веткам; ветки качаются параллельно (--reply-threads)
+            glock = threading.Lock()
+            bad = []
+
+            def thread(r):
                 cursor, more = 0, True
-                while more and len(got) < max_total and time.monotonic() - t0 <= max_sec:
-                    prev = cursor
-                    cs, cursor, more = page(a, pid, cursor, r["id"])
-                    if not cs or cursor == prev:
+                try:
+                    while more and len(got) < max_total and time.monotonic() - t0 <= max_sec:
+                        prev = cursor
+                        cs, cursor, more = page(a, pid, cursor, r["id"])
+                        if not cs or cursor == prev:
+                            break
+                        with glock:
+                            got.extend([_norm(c, pid, r["id"]) for c in cs][: max(0, max_total - len(got))])
+                except Exception as exc:
+                    bad.append(f"{type(exc).__name__}: {str(exc)[:60]}")
+
+            todo_r = [r for r in sorted(got[:], key=lambda x: -(x.get("like_count") or 0)) if r.get("reply_count")]
+            nthr = a.reply_threads if src == "web" else 1
+            if nthr > 1 and len(todo_r) > 1:
+                with ThreadPoolExecutor(min(nthr, len(todo_r))) as rex:
+                    list(rex.map(thread, todo_r))
+            else:
+                for r in todo_r:
+                    if len(got) >= max_total or time.monotonic() - t0 > max_sec:
                         break
-                    got += [_norm(c, pid, r["id"]) for c in cs][: max_total - len(got)]
+                    thread(r)
+            if bad:
+                return got, f"{src} неполный (ответы: {len(bad)} веток с ошибкой, {bad[0]})"
             if len(got) >= max_total:
                 status = f"лимит {max_total} всего"
             elif time.monotonic() - t0 > max_sec:
@@ -217,13 +235,14 @@ def build_xlsx(posts):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--reply-threads", type=int, default=6, help="сколько веток ответов одного поста качать параллельно")
     ap.add_argument("--all-comments", action="store_true",
                     help="все комментарии и все ответы со всех постов, без лимитов; посты, собранные раньше с лимитом, догружаются")
     ap.add_argument("--limits", default="", help='например "A=300/2000/300,D=20/100/45" (верхних/всего/секунд)')
     ap.add_argument("--only-tiers", default="", help="например A,B")
     ap.add_argument("--skip-ids", default="comments_done_mac_ids.txt", help="файл с post_id, которые уже собраны (пропустить)")
     ap.add_argument("--workers", type=int, default=6)
-    ap.add_argument("--sleep", type=float, default=1.0, help="пауза между постами в каждом потоке, сек")
+    ap.add_argument("--sleep", type=float, default=0.0, help="пауза между постами в каждом потоке, сек")
     ap.add_argument("--impersonate", default="chrome")
     ap.add_argument("--source", default="auto", choices=["auto", "web", "tikwm"],
                     help="auto: веб-API TikTok, при ошибке — tikwm (медленный, ~1 запрос/с)")
@@ -251,7 +270,7 @@ def main():
                 try:
                     r = json.loads(line)
                     if not any(x in str(r.get("status", "")) for x in ("ошибка после 0", "нет метода")):
-                        if a.all_comments and "лимит" in str(r.get("status", "")):
+                        if a.all_comments and any(x in str(r.get("status", "")) for x in ("лимит", "неполный")):
                             done.discard(r["post_id"]); continue   # был обрезан лимитом — собрать заново целиком
                         done.add(r["post_id"])
                 except Exception:
