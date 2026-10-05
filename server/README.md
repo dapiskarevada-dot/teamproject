@@ -57,3 +57,12 @@
     tar czf templates.tgz -C out templates        # скачать через Jupyter
 
 `sheets/` — контактные листы крупнейших кластеров, `images.csv`/`clusters.csv` — для join с таблицами по post_id.
+
+## Разметка постов через Gemini (ось «что говорится»)
+
+`label_input.jsonl.gz` — 19 347 постов с упоминанием школы в тексте (обе выборки). На поде:
+
+    cd /teamproject && git pull && cd server && pip install -q pandas openpyxl requests && python server_label.py --limit 50   # проба
+    nohup python server_label.py > label.log 2>&1 &                                                                          # всё
+
+Результат: `out/labels.jsonl` (кэш) и `РАЗМЕТКА.xlsx` (Сводка / Школа×пост / Негатив / Посты / Не про школы).
