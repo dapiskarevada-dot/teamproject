@@ -504,7 +504,7 @@ def coverage_frames(cov, short):
     return pd.DataFrame(rows), line
 
 
-def build_all_schools_workbook(results):
+def build_all_schools_workbook(results, out_name="ИТОГ_ВСЕ_ШКОЛЫ.xlsx"):
     """ИТОГ_ВСЕ_ШКОЛЫ.xlsx: все посты, все комментарии, сводка по школам."""
     import pandas as pd
     parts = [r for r in results if r]
@@ -542,7 +542,7 @@ def build_all_schools_workbook(results):
                    "photo": d.get("из них photo (карусели)", 0), "с текстом слайдов": d.get("с текстом слайдов", 0),
                    "с Whisper": d.get("с транскриптом Whisper", 0), "с комментариями": d.get("с собранными комментариями", 0),
                    "Комментариев": d.get("Комментариев верхнего уровня", 0), "Реплаев": d.get("Реплаев", 0)})
-    out = Path("ИТОГ_ВСЕ_ШКОЛЫ.xlsx")
+    out = Path(out_name)
     with pd.ExcelWriter(out) as w:
         posts.to_excel(w, sheet_name="Посты", index=False)
         comments.to_excel(w, sheet_name="Комментарии и реплаи", index=False)
@@ -777,7 +777,10 @@ def main():
                 results.append(build_final_workbook(s["name"], case_dir))
             except Exception as exc:
                 print(f"[{s['name']}] ИТОГ не собран: {type(exc).__name__}: {exc}")
-    build_all_schools_workbook(results)
+    # отдельный план (например plan_new_schools.txt) не перезаписывает основной ИТОГ_ВСЕ_ШКОЛЫ.xlsx
+    stem = Path(a.plan).stem
+    out_name = "ИТОГ_ВСЕ_ШКОЛЫ.xlsx" if stem in ("schools_plan", "plan_census") else f"ИТОГ_ВСЕ_ШКОЛЫ_{stem}.xlsx"
+    build_all_schools_workbook(results, out_name)
     print("\nСостояние по школам:", STATE_FILE)
     return rc_all
 

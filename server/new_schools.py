@@ -292,6 +292,19 @@ def discover(a):
             for r in rows.values():
                 w.writerow({k: r.get(k, "") for k in FIELDS})
 
+    mac = HERE / "new_posts_mac.csv"       # посты, найденные на Маке через аккаунты (ПЕРЕПИСЬ_НОВЫЕ + НОВЫЕ_ДЛЯ_СЕРВЕРА)
+    if mac.exists():
+        n = 0
+        for r in csv.DictReader(open(mac, encoding="utf-8")):
+            if not r.get("post_id") or r["post_id"] in skip or not in_window(r):
+                continue
+            if r["post_id"] in rows:
+                if r["found_by"] not in rows[r["post_id"]]["found_by"]:
+                    rows[r["post_id"]]["found_by"] += "; " + r["found_by"]
+                continue
+            rows[r["post_id"]] = {k: r.get(k, "") for k in FIELDS}; n += 1
+        print(f"С Мака (new_posts_mac.csv): новых в окне {n} | всего {len(rows)}", flush=True)
+        save()
     done_src = set(json.loads((NEW / "discover_done.json").read_text())) if (NEW / "discover_done.json").exists() else set()
     for s in plan:
         sch = s["school"]
