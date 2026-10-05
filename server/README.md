@@ -47,3 +47,13 @@
     nohup python server_screen_ocr.py > screen.log 2>&1 &                                                                  # всё
 
 Результат `out/screen_text.jsonl` → скачать рядом с транскриптами: `ОБЩИЕ_ТАБЛИЦА.command` и `СЕРВЕР_ИМПОРТ.command` подхватят его сами.
+
+## Шаблоны картинок (айсберги, тир-листы, мемы) — кластеризация
+
+На поде, пока кадры не удалены (можно параллельно с server_screen_ocr.py):
+
+    cd /teamproject && git pull && cd server && pip install -q open_clip_torch hdbscan scikit-learn && nohup python server_templates.py > templates.log 2>&1 &
+    tail -3 templates.log                         # ждать «Готово: out/templates/»
+    tar czf templates.tgz -C out templates        # скачать через Jupyter
+
+`sheets/` — контактные листы крупнейших кластеров, `images.csv`/`clusters.csv` — для join с таблицами по post_id.
