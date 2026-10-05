@@ -66,3 +66,10 @@
     nohup python server_label.py > label.log 2>&1 &                                                                          # всё
 
 Результат: `out/labels.jsonl` (кэш) и `РАЗМЕТКА.xlsx` (Сводка / Школа×пост / Негатив / Посты / Не про школы).
+
+## Комментарии на сервере (yt-dlp, без аккаунтов)
+
+    cd /teamproject && git pull && cd server && pip install -q -U yt-dlp curl_cffi pandas openpyxl && python server_comments.py --limit 5   # проба
+    nohup python server_comments.py --roots 100 --max-per-post 300 > comments.log 2>&1 &                                          # всё
+
+Посты: comment_urls.txt (если есть, из make_comment_list.py), иначе все 19 347 постов с упоминанием школ по приоритету.
