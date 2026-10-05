@@ -52,8 +52,19 @@ def tikwm(path, params, retries=4):
                 time.sleep(w)
             _last[0] = time.monotonic()
         try:
-            r = _sess.get("https://www.tikwm.com" + path, params=params, timeout=40)
-            j = r.json()
+            url = "https://www.tikwm.com" + path
+            # поиск у tikwm отвечает только на POST (форма), остальное — GET; если ответ не JSON — пробуем другой способ
+            first, second = (("post", "get") if path.endswith("/search") else ("get", "post"))
+            r = None
+            for how in (first, second):
+                r = (_sess.post(url, data=params, timeout=40, headers={"Content-Type": "application/x-www-form-urlencoded"})
+                     if how == "post" else _sess.get(url, params=params, timeout=40))
+                try:
+                    j = r.json(); break
+                except Exception:
+                    j = None
+            if j is None:
+                raise RuntimeError(f"не JSON, HTTP {r.status_code}: {r.text[:80]!r}")
             if j.get("code") == 0:
                 return j.get("data") or {}
             err = str(j.get("msg"))[:100]
