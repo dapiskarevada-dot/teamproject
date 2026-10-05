@@ -112,7 +112,7 @@ def _tikwm_page(a, pid, cursor, cid=None):
             time.sleep(w)
         _tikwm_last[0] = time.monotonic()
     if cid:
-        j = _get_json("https://www.tikwm.com/api/comment/reply", a, {"comment_id": cid, "count": 50, "cursor": cursor})
+        j = _get_json("https://www.tikwm.com/api/comment/reply", a, {"video_id": pid, "comment_id": cid, "count": 50, "cursor": cursor})
     else:
         j = _get_json("https://www.tikwm.com/api/comment/list", a, {"url": pid, "count": 50, "cursor": cursor})
     if j.get("code") != 0:
