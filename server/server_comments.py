@@ -198,6 +198,7 @@ def fetch(pid, url, a, lim):
 
 def build_xlsx(posts):
     import pandas as pd
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE as ILLEGAL   # невидимые управляющие символы, Excel их не принимает
     rows = []
     url_by = {p: u for p, u, _ in posts}
     tier_by = {p: t for p, _, t in posts}
@@ -225,7 +226,7 @@ def build_xlsx(posts):
     if len(df) < 1_000_000:
         for c in df.columns:
             if df[c].dtype == object:
-                df[c] = df[c].map(lambda x: x[:32000] if isinstance(x, str) else x)
+                df[c] = df[c].map(lambda x: ILLEGAL.sub("", x)[:32000] if isinstance(x, str) else x)
         df.to_excel(HERE / "КОММЕНТАРИИ_сервер.xlsx", index=False)
     else:
         print("строк больше миллиона — xlsx не делаю (Excel не вместит), есть csv", flush=True)
