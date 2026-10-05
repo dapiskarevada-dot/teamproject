@@ -30,6 +30,8 @@ HERE = Path(__file__).resolve().parent
 OUT = HERE / "out"
 CDIR = OUT / "comments"
 LOG = OUT / "comments_done.jsonl"
+PLAN = HERE / "comment_plan.csv"
+RESULT = HERE / "КОММЕНТАРИИ_сервер"     # + .csv / .xlsx
 
 
 DEFAULT_LIMITS = {"A": (200, 1000, 240), "B": (200, 1000, 240), "C": (100, 400, 120), "D": (30, 150, 60), "": (100, 300, 90)}
@@ -45,7 +47,7 @@ def parse_limits(spec):
 
 def targets(limit, only=None):
     """[(post_id, url, tier)] в порядке приоритета."""
-    plan = HERE / "comment_plan.csv"
+    plan = PLAN
     if plan.exists():
         import csv
         out = [(r["post_id"], r["url"], r.get("tier", "")) for r in csv.DictReader(open(plan, encoding="utf-8"))]
@@ -222,19 +224,22 @@ def build_xlsx(posts):
     df = pd.DataFrame(rows)
     if len(df):
         df = df.drop_duplicates(subset=["ID комментария"])
-    df.to_csv(HERE / "КОММЕНТАРИИ_сервер.csv", index=False, encoding="utf-8-sig")
+    df.to_csv(RESULT.with_suffix(".csv"), index=False, encoding="utf-8-sig")
     if len(df) < 1_000_000:
         for c in df.columns:      # dtype может быть и object, и str (pandas 3) — чистим все текстовые ячейки
             df[c] = df[c].map(lambda x: ILLEGAL.sub("", x)[:32000] if isinstance(x, str) else x)
-        df.to_excel(HERE / "КОММЕНТАРИИ_сервер.xlsx", index=False)
+        df.to_excel(RESULT.with_suffix(".xlsx"), index=False)
     else:
         print("строк больше миллиона — xlsx не делаю (Excel не вместит), есть csv", flush=True)
     print(f"КОММЕНТАРИИ_сервер.csv/.xlsx: {len(df)} строк без дублей, постов {df['ID поста'].nunique() if len(df) else 0}", flush=True)
 
 
 def main():
+    global OUT, CDIR, LOG, PLAN, RESULT
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--plan", default="", help="свой comment_plan.csv (post_id,url,tier)")
+    ap.add_argument("--outdir", default="", help="своя папка для comments/, журнала и итоговой таблицы")
     ap.add_argument("--reply-threads", type=int, default=6, help="сколько веток ответов одного поста качать параллельно")
     ap.add_argument("--recheck-empty", action="store_true",
                     help="пересобрать посты, по которым пришло 0 комментариев (проверка, не стал ли TikTok отдавать пустоту)")
@@ -251,6 +256,10 @@ def main():
     ap.add_argument("--probe", default="", help="ссылка или ID поста: проверить источники и выйти")
     ap.add_argument("--xlsx-only", action="store_true")
     a = ap.parse_args()
+    if a.plan:
+        PLAN = Path(a.plan).resolve()
+    if a.outdir:
+        OUT = Path(a.outdir).resolve(); CDIR = OUT / "comments"; LOG = OUT / "comments_done.jsonl"; RESULT = OUT / "КОММЕНТАРИИ"
     CDIR.mkdir(parents=True, exist_ok=True)
     if a.probe:
         import re as _re

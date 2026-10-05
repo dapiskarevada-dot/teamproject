@@ -1,0 +1,19 @@
+# ДОСБОР ПО НОВЫМ И ПУСТЫМ ШКОЛАМ (server/new_schools.py). Формат как schools_plan.txt:
+# Школа | поисковые запросы через ; | хэштеги без # через ; | аккаунты без @ через ;
+# Только однозначные написания: «морозилка», «пифагор», «топ егэ» без уточнения дают мусор.
+EGEHub | егэхаб; egehub; егэ хаб; egehub отзывы; егэхаб отзывы; егэхаб промокод; егэхаб или; егэхаб vs | egehub; егэхаб; egehub2026; egehub2025; ege_hub; егэхабподготовкакегэ | egehub_vibe
+NOO | онлайн школа ноо; noo school; ноо егэ; ноо отзывы; ноо промокод; ноо или; ноо vs | ноо; nooschool; noo | nooschool8
+Морозилка | морозилка онлайн школа; морозилка егэ; морозилка отзывы; морозилка промокод; морозилка или | морозилка; морозилкаегэ | morozilka_math
+Профиматика | профиматика; profimatika; профиматика отзывы; профиматика промокод; профиматика или; профиматика vs | профиматика; profimatika; ошпрофиматика | profimatika
+Insperia | insperia; инсперия; insperia отзывы; инсперия отзывы; insperia промокод; insperia или; insperia vs | insperia; инсперия; insperiaхимия; пробникinsperia; insperiago |
+Школково | школково; shkolkovo; школково отзывы; школково егэ; школково или; школково vs | школково; школковоегэ; shkolkovo | residentshkolcovo
+Егэфлекс | егэфлекс; egeflex; егэ флекс; егэфлекс отзывы; егэфлекс промокод; егэфлекс или | егэфлекс; egeflex | egeflex
+NeoFamily | neofamily; неофэмили; neofamily отзывы; neofamily егэ; neofamily промокод; neofamily или | neofamily; неофэмили | bio_neofamily_ege
+Элита ЕГЭ | элита егэ; элитаегэ; элита егэ отзывы; элита егэ промокод; элита егэ или | элитаегэ; ошэлита; егээлита | elite_ege
+SmitUp | smitup; смитап; smitup отзывы; smitup промокод; smitup или | smitup; смитап |
+ЕГЭ налегке | егэ налегке; егэналегке; егэ налегке отзывы; егэ налегке промокод | егэналегке | egenalegke; egenalegke.hist
+Пифагор | онлайн школа пифагор; школа пифагора егэ; пифагор отзывы онлайн школа | пифагорегэ; школапифагор |
+Adrenaline | adrenaline school; adrenaline chem; адреналин онлайн школа | adrenalineschool | adrenaline_chem
+Lomonosov School | lomonosov school; ломоносов скул; ломоносов школа егэ; lomonosov school отзывы | lomonosovschool |
+ТОП ЕГЭ | топ егэ онлайн школа | топегэ |
+Учи.ру | учи ру егэ; учи.ру отзывы; uchi.ru егэ | учиру; uchiru |
