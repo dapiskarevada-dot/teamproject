@@ -237,6 +237,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--reply-threads", type=int, default=6, help="сколько веток ответов одного поста качать параллельно")
+    ap.add_argument("--recheck-empty", action="store_true",
+                    help="пересобрать посты, по которым пришло 0 комментариев (проверка, не стал ли TikTok отдавать пустоту)")
     ap.add_argument("--all-comments", action="store_true",
                     help="все комментарии и все ответы со всех постов, без лимитов; посты, собранные раньше с лимитом, догружаются")
     ap.add_argument("--limits", default="", help='например "A=300/2000/300,D=20/100/45" (верхних/всего/секунд)')
@@ -271,6 +273,8 @@ def main():
                 try:
                     r = json.loads(line)
                     if not any(x in str(r.get("status", "")) for x in ("ошибка после 0", "нет метода")):
+                        if a.recheck_empty and not r.get("n"):
+                            done.discard(r["post_id"]); continue   # было 0 комментариев — перепроверить
                         if a.all_comments and any(x in str(r.get("status", "")) for x in ("лимит", "неполный")):
                             done.discard(r["post_id"]); continue   # был обрезан лимитом — собрать заново целиком
                         done.add(r["post_id"])
@@ -320,6 +324,15 @@ def main():
                     if fails >= 30:
                         print("30 ошибок подряд — TikTok не отдаёт комментарии этому IP. Останавливаюсь.", flush=True)
                         ex.shutdown(wait=False, cancel_futures=True); break
+    if a.recheck_empty and not a.xlsx_only and LOG.exists():
+        last = {}
+        for line in LOG.read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(line); last.setdefault(r["post_id"], []).append(r.get("n") or 0)
+            except Exception:
+                pass
+        was0 = [v for v in last.values() if len(v) > 1 and v[-2] == 0]
+        print(f"Перепроверка пустых: {len(was0)} постов, теперь с комментариями {sum(1 for v in was0 if v[-1] > 0)}", flush=True)
     build_xlsx(posts)
 
 
