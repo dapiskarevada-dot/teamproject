@@ -122,6 +122,7 @@ def main():
     ap.add_argument("--impersonate", default="", help="маскировка TLS под браузер (chrome, safari); нужен pip install curl_cffi")
     ap.add_argument("--dl", default="auto", choices=["auto", "web", "api", "tikwm"], help="путь скачивания: auto = сайт -> мобильный API -> tikwm")
     ap.add_argument("--dl-test", default="", help="быстрая проверка: скачать одну ссылку и выйти (без Whisper)")
+    ap.add_argument("--batch", type=int, default=16, help="батч Whisper (BatchedInferencePipeline); 1 = обычный режим")
     ap.add_argument("--sleep", type=float, default=0.0, help="пауза между скачиваниями в каждом потоке, сек (если TikTok начнёт отказывать)")
     a = ap.parse_args()
     global IMPERSONATE, DL_MODE; IMPERSONATE = a.impersonate; DL_MODE = a.dl
@@ -150,6 +151,22 @@ def main():
     print(f"К обработке {len(rows)} (уже готово {len(done)})", flush=True)
     from faster_whisper import WhisperModel
     model = WhisperModel(a.model, device="cuda", compute_type="float16")
+    batched = None
+    if a.batch > 1:
+        try:
+            from faster_whisper import BatchedInferencePipeline
+            batched = BatchedInferencePipeline(model=model)
+            print(f"Whisper: батчевый режим, batch={a.batch} (та же модель large-v3, beam 5, в 2–4 раза быстрее)", flush=True)
+        except Exception as exc:
+            print("Whisper: батчевый режим недоступен, обычный:", exc, flush=True)
+    def run_whisper(audio):
+        kw = dict(language="ru", vad_filter=True, beam_size=5, initial_prompt=PROMPT, condition_on_previous_text=False)
+        if batched is not None:
+            try:
+                return batched.transcribe(audio, batch_size=a.batch, **kw)
+            except TypeError:
+                return batched.transcribe(audio, batch_size=a.batch, language="ru", beam_size=5, initial_prompt=PROMPT)
+        return model.transcribe(audio, **kw)
     q = queue.Queue(maxsize=a.workers * 2); stop = object()
 
     def worker(items):
@@ -182,7 +199,7 @@ def main():
                 if audio.size == 0:
                     rec.update({"text": "", "segments": [], "note": "нет аудио"})
                 else:
-                    segs, info = model.transcribe(audio, language="ru", vad_filter=True, beam_size=5, initial_prompt=PROMPT, condition_on_previous_text=False)
+                    segs, info = run_whisper(audio)
                     out, parts = [], []
                     for s in segs:
                         t = s.text.strip(); low = t.lower()
