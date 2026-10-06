@@ -43,13 +43,35 @@ def schools_cols(df, fields):
     return df
 
 
+CACHE = HERE / ".cache_datasets"
+
+
+def cached(name, sources, build):
+    """Результат build() кэшируется в pickle; пересчитывается, только если какой-то из sources изменился."""
+    import pandas as pd
+    CACHE.mkdir(exist_ok=True)
+    key = "|".join(f"{Path(s).name}:{Path(s).stat().st_mtime_ns}:{Path(s).stat().st_size}" for s in sources if Path(s).exists())
+    pk, kf = CACHE / f"{name}.pkl", CACHE / f"{name}.key"
+    if pk.exists() and kf.exists() and kf.read_text(encoding="utf-8") == key:
+        print(f"  {name}: из кэша", flush=True)
+        return pd.read_pickle(pk)
+    df = build()
+    df.to_pickle(pk); kf.write_text(key, encoding="utf-8")
+    return df
+
+
+def read_xlsx(path, sheet):
+    import pandas as pd
+    return cached(f"{Path(path).stem}__{sheet}", [path], lambda: pd.read_excel(path, sheet_name=sheet, dtype=str).fillna(""))
+
+
 def load_posts():
     import pandas as pd
     parts = []
     for f, src in (("ИТОГ_ВСЕ_ШКОЛЫ.xlsx", "перепись (13 школ)"), ("ИТОГ_ВСЕ_ШКОЛЫ_plan_new_schools.xlsx", "новые школы (Мак)")):
         p = ROOT / f
         if p.exists():
-            d = pd.read_excel(p, sheet_name="Посты", dtype=str).fillna("")
+            d = read_xlsx(p, "Посты").copy()
             d["Набор"] = src
             parts.append(d); print(f"{f}: {len(d)} строк", flush=True)
     sch = pd.concat(parts, ignore_index=True)
@@ -81,7 +103,7 @@ def load_posts():
     print("школы: пересчитываю упоминания по словарю…", flush=True)
     sch = schools_cols(sch, ["Описание поста", "Хэштеги", "Субтитры", "Транскрипт (Whisper)", "Текст со слайдов",
                              "Школы на слайдах", "Текст на экране (видео)", "Школы на экране (видео)"])
-    gen = pd.read_excel(ROOT / "ОБЩИЕ_ЕГЭ_с_транскриптами.xlsx", sheet_name="Все посты", dtype=str).fillna("")
+    gen = read_xlsx(ROOT / "ОБЩИЕ_ЕГЭ_с_транскриптами.xlsx", "Все посты").copy()
     print(f"ОБЩИЕ_ЕГЭ_с_транскриптами.xlsx: {len(gen)} строк", flush=True)
     gen = gen.drop_duplicates("post_id")
     print("общие: пересчитываю упоминания по словарю…", flush=True)
@@ -111,15 +133,36 @@ def load_comments():
     return c
 
 
+def tag_comments(com):
+    """Школы в тексте комментариев. Быстро: один общий regex отсеивает ~99% комментариев без единого написания школы,
+    полный разбор (контекст, исключения) — только для остальных; одинаковые тексты считаются один раз."""
+    import re
+    from school_match import find_schools, load, norm
+    rules, _ = load()
+    anyrx = re.compile("|".join(f"(?:{rx.pattern})" for _, k, rx in rules if k != "author"))
+    memo = {}
+
+    def one(t):
+        if not t:
+            return ""
+        n = norm(t)
+        if not anyrx.search(n):
+            return ""
+        if n not in memo:
+            memo[n] = "; ".join(dict.fromkeys(h["school"] for h in find_schools({"t": t}) if h["kind"] != "author"))
+        return memo[n]
+    com["Школы в комментарии"] = com["Текст"].map(one)
+    return com
+
+
 def main():
     import pandas as pd
-    from school_match import find_schools
     OUT.mkdir(exist_ok=True)
     sch, gen = load_posts()
-    com = load_comments()
-    print("ищу школы в тексте комментариев…", flush=True)
-    com["Школы в комментарии"] = com["Текст"].map(
-        lambda t: "; ".join(dict.fromkeys(h["school"] for h in find_schools({"t": t}) if h["kind"] != "author")) if t else "")
+    srcs = [HERE / "out_all" / "КОММЕНТАРИИ.csv", HERE / "comments_server" / "КОММЕНТАРИИ_сервер.csv", ROOT / "school_aliases.tsv"]
+    srcs += sorted(glob.glob(str(ROOT / "cases" / "*" / "search" / "comments_all.csv")))
+    print("комментарии (+ школы в тексте)…", flush=True)
+    com = cached("comments_tagged", srcs, lambda: tag_comments(load_comments()))
 
     for name, posts, idcol, urlcol, scol in (("ШКОЛЫ", sch, "ID поста", "Ссылка на пост", "Школы упомянуты (словарь)"),
                                              ("ОБЩИЕ_ЕГЭ", gen, "post_id", "canonical_url", "Школы упомянуты (словарь)")):
