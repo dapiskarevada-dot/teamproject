@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """НА MAC, после ПЕРЕПИСЬ_НОВЫЕ.command: посты всех школ из plan_new_schools.txt -> server/new_posts_mac.csv
 (формат new_schools.py). На сервере new_schools.py подхватит этот файл сам и сделает расшифровку + комментарии."""
-import csv, os, sys
+import argparse, csv, os, sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT)); os.chdir(ROOT)
@@ -11,8 +11,12 @@ from pipeline import load_plan, merged_posts, slug, CASES_ROOT
 FIELDS = ["post_id", "url", "post_type", "author_username", "author_nickname", "create_time", "description",
           "play_count", "digg_count", "comment_count", "share_count", "collect_count", "duration",
           "music_title", "music_original", "found_by", "schools_in_text", "images"]
+ap = argparse.ArgumentParser()
+ap.add_argument("--plan", default="plan_new_schools.txt")
+ap.add_argument("--out", default="new_posts_mac.csv", help="имя файла в server/")
+a = ap.parse_args()
 rows = {}
-for s in load_plan(ROOT / "plan_new_schools.txt"):
+for s in load_plan(ROOT / a.plan):
     name = s["name"].split(",")[0].strip()
     posts = merged_posts(CASES_ROOT / slug(s["name"]))
     print(f"{name}: {len(posts)} постов")
@@ -28,7 +32,7 @@ for s in load_plan(ROOT / "plan_new_schools.txt"):
                      "play_count": f.get("play_count"), "digg_count": f.get("like_count"), "comment_count": f.get("comment_count"),
                      "share_count": f.get("share_count"), "collect_count": f.get("collect_count"), "duration": f.get("duration_sec"),
                      "music_title": f.get("music_title"), "music_original": "", "found_by": lab, "schools_in_text": "", "images": ""}
-out = ROOT / "server" / "new_posts_mac.csv"
+out = ROOT / "server" / a.out
 with open(out, "w", newline="", encoding="utf-8") as fh:
     w = csv.DictWriter(fh, FIELDS); w.writeheader(); w.writerows(rows.values())
 print(f"Всего {len(rows)} постов -> {out}  (загрузить на под в /teamproject/server/)")
