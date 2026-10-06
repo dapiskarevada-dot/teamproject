@@ -3,8 +3,9 @@
 """
 Текст с каруселей (фото-постов) через Gemini 2.5 Flash (OpenRouter) — по файлам постов new_posts_mac*.csv.
 
-Картинки с Мака не нужны: слайды скачиваются заново по ссылке на пост (tikwm, запасной путь — страница TikTok),
-поэтому запускать можно на любом Маке, где лежат csv. Аккаунт TikTok не нужен.
+Слайды берутся сначала из cases/tiktok_media/raw/posts/<id>/images (что уже скачал сбор на этом Маке);
+каких нет — скачиваются заново по ссылке на пост (tikwm, запасной путь — страница TikTok). Аккаунт TikTok не нужен.
+Ответы Gemini кэшируются рядом с картинкой (<слайд>.<модель>.vlm.json, как у ocr_vlm.py) — повторно не оплачиваются.
 
     python carousels_ocr.py                                   # все server/new_posts_mac*.csv
     python carousels_ocr.py server/new_posts_mac_masha.csv    # один файл
@@ -82,7 +83,17 @@ def to_jpeg_if_needed(f: Path) -> Path:
     return f
 
 
+IMG_EXT = (".jpg", ".jpeg", ".png", ".webp")
+
+
 def get_slides(pid, url):
+    # 1) картинки, которые уже скачал сбор на этом Маке (cases/tiktok_media/raw/posts/<id>/images)
+    local = ROOT / "cases" / "tiktok_media" / "raw" / "posts" / pid / "images"
+    if local.is_dir():
+        have = sorted(p for p in local.iterdir() if p.suffix.lower() in IMG_EXT)
+        if have:
+            return have, "с Мака"
+    # 2) скачанные этим скриптом раньше; 3) скачать заново
     folder = SLIDES / pid
     have = sorted(p for p in folder.glob("slide_*") if p.suffix.lower() in (".jpg", ".png", ".webp")) if folder.exists() else []
     if have:
@@ -118,8 +129,15 @@ def process(row, prompt, key, model, base):
     for i, f in enumerate(slides, 1):
         if STOP.is_set():
             return None
+        tag = re.sub(r"[^\w.-]", "_", model)
+        cache = f.with_name(f"{f.stem}.{tag}.vlm.json")   # тот же кэш, что у ocr_vlm.py
         try:
-            d = parse_json(ask_model(key, base, model, f, prompt=prompt))
+            if cache.exists():
+                d = json.loads(cache.read_text(encoding="utf-8"))["parsed"]
+            else:
+                raw = ask_model(key, base, model, f, prompt=prompt)
+                d = parse_json(raw)
+                cache.write_text(json.dumps({"model": model, "raw": raw, "parsed": d}, ensure_ascii=False), encoding="utf-8")
         except Exception as exc:
             if "402" in str(exc):
                 STOP.set(); return None
