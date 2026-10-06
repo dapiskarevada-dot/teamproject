@@ -317,6 +317,11 @@ async def collect_videos_and_transcribe(api, unique_posts, args):
     videos = [p for p in unique_posts if p.get("post_type_inferred") != "photo"]
     if not videos:
         return
+    if getattr(args, "no_videos", False) and args.whisper == "off":
+        # только поиск: субтитры TikTok почти всегда пустые, а запрос на каждое видео (+4 с паузы) — часы без вывода.
+        # Речь потом расшифрует сервер (Whisper).
+        print(f"\nVideo posts: {len(videos)} — пропускаю субтитры и видео (--no-videos --whisper off)")
+        return
     media_root = args.case_dir.parent / "tiktok_media"
     from tiktok_fields import download_subtitles, subtitle_langs, unwrap_item
     print(f"\nVideo posts: {len(videos)} — subtitles + video download (--whisper {args.whisper})")
