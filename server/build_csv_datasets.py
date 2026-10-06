@@ -60,6 +60,24 @@ def load_posts():
     sch = sch.drop_duplicates("ID поста").set_index("ID поста")
     sch["Школы (план)"] = plan; sch["Набор"] = nabor
     sch = sch.reset_index()
+    # расшифровки с сервера (new/out/transcripts.jsonl -> server/transcripts_new_schools.jsonl) — только для постов,
+    # которые нашёл Мак и у которых своей расшифровки нет; посты, найденные только сервером, не добавляются
+    tf = HERE / "transcripts_new_schools.jsonl"
+    if tf.exists():
+        import json
+        tr = {}
+        for line in tf.read_text(encoding="utf-8", errors="ignore").splitlines():
+            try:
+                r = json.loads(line); tr[str(r["post_id"])] = r
+            except Exception:
+                pass
+        empty = sch["Транскрипт (Whisper)"].str.strip() == ""
+        add = empty & sch["ID поста"].isin(tr)
+        sch.loc[add, "Транскрипт (Whisper)"] = sch.loc[add, "ID поста"].map(lambda i: tr[i].get("text") or "")
+        sch.loc[add, "Источник транскрипта"] = "Whisper (сервер, новые школы)"
+        sch.loc[add, "Whisper статус"] = sch.loc[add, "ID поста"].map(
+            lambda i: "речь" if tr[i].get("text") else ("не скачалось" if tr[i].get("error") else "без речи"))
+        print(f"расшифровки с сервера: добавлено к {int(add.sum())} постам (с речью {int((sch.loc[add, 'Транскрипт (Whisper)'] != '').sum())})", flush=True)
     print("школы: пересчитываю упоминания по словарю…", flush=True)
     sch = schools_cols(sch, ["Описание поста", "Хэштеги", "Субтитры", "Транскрипт (Whisper)", "Текст со слайдов",
                              "Школы на слайдах", "Текст на экране (видео)", "Школы на экране (видео)"])
