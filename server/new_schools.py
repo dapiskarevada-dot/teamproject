@@ -29,6 +29,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 NEW = HERE / "new"
 POSTS = NEW / "new_posts.csv"
+TABLE_NAME = "НОВЫЕ_ШКОЛЫ_посты.csv"
 FIELDS = ["post_id", "url", "post_type", "author_username", "author_nickname", "create_time", "description",
           "play_count", "digg_count", "comment_count", "share_count", "collect_count", "duration",
           "music_title", "music_original", "found_by", "schools_in_text", "images"]
@@ -261,6 +262,27 @@ def to_row(v, found_by):
             "found_by": found_by, "schools_in_text": "", "images": json.dumps(imgs) if imgs else ""}
 
 
+def mac_discover(a):
+    """--mac-only: список постов = только файлы с Маков (new_posts_mac*.csv), без собственного поиска сервера.
+    Посты из основных датасетов пропускаются (у них уже есть расшифровки и комментарии)."""
+    NEW.mkdir(exist_ok=True)
+    skip = known_ids()
+    rows = {}
+    for mac in sorted(HERE.glob("new_posts_mac*.csv")):
+        n = 0
+        for r in csv.DictReader(open(mac, encoding="utf-8")):
+            pid = (r.get("post_id") or "").strip()
+            if not pid or pid in skip or pid in rows:
+                continue
+            rows[pid] = {k: r.get(k, "") for k in FIELDS}; n += 1
+        print(f"С Мака ({mac.name}): новых {n} | всего {len(rows)}", flush=True)
+    with open(POSTS, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, FIELDS); w.writeheader()
+        w.writerows(rows.values())
+    print(f"Только посты с Маков: {len(rows)} (видео {sum(1 for r in rows.values() if r['post_type'] != 'photo')}). "
+          f"Посты, найденные сервером, не обрабатываются.", flush=True)
+
+
 def discover(a):
     from school_match import find_schools
     NEW.mkdir(exist_ok=True)
@@ -435,13 +457,13 @@ def table(a):
         out.append(r)
     import pandas as pd
     df = pd.DataFrame(out)
-    df.to_csv(NEW / "НОВЫЕ_ШКОЛЫ_посты.csv", index=False, encoding="utf-8-sig")
-    print(f"new/НОВЫЕ_ШКОЛЫ_посты.csv: {len(df)} постов, с расшифровкой {sum(1 for x in out if x['Транскрипт (Whisper)'])}, "
+    df.to_csv(NEW / TABLE_NAME, index=False, encoding="utf-8-sig")
+    print(f"new/{TABLE_NAME}: {len(df)} постов, с расшифровкой {sum(1 for x in out if x['Транскрипт (Whisper)'])}, "
           f"с комментариями {sum(1 for x in out if x['Комментариев собрано'])}", flush=True)
 
 
 def pack(a):
-    files = ["new/new_posts.csv", "new/НОВЫЕ_ШКОЛЫ_посты.csv", "new/out", "new/comments_out", "new/comment_plan.csv"]
+    files = [f"new/{POSTS.name}", f"new/{TABLE_NAME}", "new/out", "new/comments_out", "new/comment_plan.csv"]
     files = [f for f in files if (HERE / f).exists()]
     # кадры видео (new/out/frames, гигабайты) в архив не кладём — диск пода маленький; --pack-frames, если нужны
     excl = ["--exclude=tmp_dl"] + ([] if getattr(a, "pack_frames", False) else ["--exclude=new/out/frames"])
@@ -461,6 +483,8 @@ def main():
     ap.add_argument("--max-per-account", type=int, default=1000)
     ap.add_argument("--max-per-author", type=int, default=300)
     ap.add_argument("--comment-workers", type=int, default=16)
+    ap.add_argument("--mac-only", action="store_true",
+                    help="обрабатывать только посты из new_posts_mac*.csv (без постов, найденных сервером)")
     ap.add_argument("--pack-frames", action="store_true", help="класть в архив и кадры видео (много места)")
     ap.add_argument("--probe", action="store_true", help="проверить поиск tikwm и выйти")
     a = ap.parse_args()
@@ -472,7 +496,12 @@ def main():
         return
     steps = set(x.strip() for x in a.steps.split(","))
     t0 = time.monotonic()
-    if "discover" in steps:
+    if a.mac_only:
+        global POSTS, TABLE_NAME
+        POSTS, TABLE_NAME = NEW / "mac_posts.csv", "МАКИ_посты.csv"
+    if "discover" in steps and a.mac_only:
+        mac_discover(a)
+    elif "discover" in steps:
         discover(a)
     procs = []
     if "transcribe" in steps:
