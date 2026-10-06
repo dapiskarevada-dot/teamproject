@@ -400,6 +400,7 @@ def run_collect(a, school):
     print(f"\n{'=' * 78}\n=== ШКОЛА: {school['name']}  |  запросов {len(school['queries'])}, хэштегов {len(school['hashtags'])}, лимит постов {a.max_posts or 'нет'}\n{'=' * 78}", flush=True)
     print("RUN:", " ".join(cmd), flush=True)
     mark(school["name"], status="running", started=datetime.now().isoformat(timespec="seconds"), case_dir=str(case_dir))
+    free_browser_profile(getattr(a, "account", ""))
     return subprocess.call(cmd), case_dir
 
 
@@ -575,10 +576,30 @@ def keep_awake():
 
 
 # ------------------------------------------------------------------ оркестрация
+def free_browser_profile(account: str):
+    """Браузер аккаунта от прошлой школы иногда не закрывается -> следующий запуск падает
+    «Failed to launch the browser process». Закрываем зависший Camoufox этого профиля и снимаем замки."""
+    if not account:
+        return
+    import subprocess
+    prof = Path.home() / ".pytok" / "firefox-profiles" / account
+    try:
+        subprocess.run(["pkill", "-f", f"firefox-profiles/{account}"], capture_output=True, timeout=10)
+        time.sleep(2)
+    except Exception:
+        pass
+    for name in ("parent.lock", ".parentlock", "lock"):
+        try:
+            (prof / name).unlink()
+        except Exception:
+            pass
+
+
 def process_school(a, school):
     """Полный цикл для одной школы (вызывается в основном процессе или в дочернем при --parallel)."""
     case_dir = CASES_ROOT / slug(school["name"])
     rc = 0
+    free_browser_profile(getattr(a, "account", ""))
     if not a.final_only:
         rc, case_dir = run_heavy(a, school) if a.heavy else run_collect(a, school)
         if rc != 0:
