@@ -443,7 +443,9 @@ def table(a):
 def pack(a):
     files = ["new/new_posts.csv", "new/НОВЫЕ_ШКОЛЫ_посты.csv", "new/out", "new/comments_out", "new/comment_plan.csv"]
     files = [f for f in files if (HERE / f).exists()]
-    subprocess.run(["tar", "czf", "new_schools_result.tgz", "--exclude=tmp_dl"] + files, cwd=HERE, check=True)
+    # кадры видео (new/out/frames, гигабайты) в архив не кладём — диск пода маленький; --pack-frames, если нужны
+    excl = ["--exclude=tmp_dl"] + ([] if getattr(a, "pack_frames", False) else ["--exclude=new/out/frames"])
+    subprocess.run(["tar", "czf", "new_schools_result.tgz"] + excl + files, cwd=HERE, check=True)
     size = (HERE / "new_schools_result.tgz").stat().st_size / 1e6
     print(f"ГОТОВО: server/new_schools_result.tgz ({size:.0f} МБ) — скачать через Jupyter", flush=True)
 
@@ -459,6 +461,7 @@ def main():
     ap.add_argument("--max-per-account", type=int, default=1000)
     ap.add_argument("--max-per-author", type=int, default=300)
     ap.add_argument("--comment-workers", type=int, default=16)
+    ap.add_argument("--pack-frames", action="store_true", help="класть в архив и кадры видео (много места)")
     ap.add_argument("--probe", action="store_true", help="проверить поиск tikwm и выйти")
     a = ap.parse_args()
     if a.probe:
