@@ -189,6 +189,7 @@ def main():
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--retry-errors", action="store_true", help="повторить карусели, которые раньше не получились")
+    ap.add_argument("--model", default="", help="по умолчанию google/gemini-2.5-flash; дешевле в ~8 раз: google/gemini-2.5-flash-lite")
     a = ap.parse_args()
     from ocr_vlm import load_key, load_schools, build_prompt, DEFAULT_MODEL, DEFAULT_BASE
     key = load_key()
@@ -220,11 +221,12 @@ def main():
     if a.limit:
         todo = todo[: a.limit]
     print(f"Каруселей всего {len(rows)}, уже готово {len(done & set(rows))}, не получилось раньше {len((failed - done) & set(rows))}, "
-          f"к обработке {len(todo)} | модель {DEFAULT_MODEL}", flush=True)
+          f"к обработке {len(todo)} | модель {a.model or DEFAULT_MODEL}", flush=True)
     prompt = build_prompt(load_schools())
+    model = a.model or DEFAULT_MODEL
     n = ok = 0; t0 = time.monotonic(); lock = threading.Lock()
     with open(JL, "a", encoding="utf-8") as fout, ThreadPoolExecutor(max_workers=a.workers) as ex:
-        futs = [ex.submit(process, r, prompt, key, DEFAULT_MODEL, DEFAULT_BASE) for r in todo]
+        futs = [ex.submit(process, r, prompt, key, model, DEFAULT_BASE) for r in todo]
         for fut in as_completed(futs):
             rec = fut.result()
             if rec is None:

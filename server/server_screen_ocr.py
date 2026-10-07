@@ -50,6 +50,9 @@ def main():
     ap.add_argument("--ids", default="", help="только эти посты: csv с колонкой post_id (например new/mac_posts.csv)")
     ap.add_argument("--short", type=int, default=25, help="речь короче N букв считается «без речи»")
     ap.add_argument("--dry-run", action="store_true", help="только посчитать ролики и кадры, без запросов к Gemini")
+    ap.add_argument("--model", default="", help="по умолчанию google/gemini-2.5-flash; дешевле в ~8 раз: google/gemini-2.5-flash-lite")
+    ap.add_argument("--max-frames", type=int, default=0, help="не больше N кадров на ролик (после удаления похожих; 0 = все)")
+    ap.add_argument("--resize", type=int, default=0, help="уменьшать кадры до N px по длинной стороне (меньше токенов; 0 = как есть)")
     a = ap.parse_args()
     global OUT
     OUT = Path(a.out) if Path(a.out).is_absolute() else (HERE / a.out)
@@ -57,8 +60,19 @@ def main():
     if a.ids:
         csv.field_size_limit(10 ** 9)
         f = Path(a.ids) if Path(a.ids).is_absolute() else HERE / a.ids
-        only = {(r.get("post_id") or "").strip() for r in csv.DictReader(open(f, encoding="utf-8-sig"))}
+        views = {}
+        for r in csv.DictReader(open(f, encoding="utf-8-sig")):
+            try:
+                views[(r.get("post_id") or "").strip()] = float(r.get("play_count") or 0)
+            except ValueError:
+                views[(r.get("post_id") or "").strip()] = 0
+        only = set(views)
     from ocr_vlm import ask_model, parse_json, load_key, load_schools, DEFAULT_MODEL, DEFAULT_BASE
+    MODEL = a.model or DEFAULT_MODEL
+    lite = "lite" in MODEL
+    PRICE = (0.00012, 0.0003) if lite else (0.0012, 0.0025)      # $ за кадр, нижняя и верхняя оценка
+    if a.resize:
+        PRICE = (PRICE[0] * 0.6, PRICE[1] * 0.6)
     from video_frames_ocr import FRAME_PROMPT, dedupe_frames
     key = load_key()
     if not key and not a.dry_run:
@@ -87,20 +101,40 @@ def main():
             except Exception:
                 pass
     todo = [(p, "video") for p in targets if p not in done and (OUT / "frames" / p).is_dir()]
+    if only is not None:          # сначала самые просматриваемые: если деньги кончатся, важное уже сделано
+        todo.sort(key=lambda t: -views.get(t[0], 0))
     car = {}
     if a.carousels and Path(a.carousels).exists():
         car = {r["post_id"]: r["url"] for r in csv.DictReader(open(a.carousels, encoding="utf-8")) if r["post_id"] not in done}
         todo = [(p, "carousel") for p in car] + todo
     if a.limit:
         todo = todo[: a.limit]
+
+    def pick(pid):
+        fr = dedupe_frames(sorted(p for p in (OUT / "frames" / pid).glob("*.jpg") if "_small" not in p.name))
+        if a.max_frames and len(fr) > a.max_frames:
+            # равномерно по ролику: при 1 кадре — середина, при 2 — начало и середина/конец
+            idx = sorted({round(i * (len(fr) - 1) / max(1, a.max_frames - 1)) for i in range(a.max_frames)}) if a.max_frames > 1 else [len(fr) // 2]
+            fr = [fr[i] for i in idx]
+        return fr
+
+    def small(f):
+        if not a.resize:
+            return f
+        g = f.with_name(f.stem + f"_small{a.resize}.jpg")
+        if not g.exists():
+            from PIL import Image
+            im = Image.open(f).convert("RGB"); im.thumbnail((a.resize, a.resize)); im.save(g, quality=88)
+        return g
+
     if a.dry_run:
-        nf = sum(len(dedupe_frames(sorted((OUT / "frames" / p).glob("*.jpg")))) for p, k in todo if k == "video")
+        nf = sum(len(pick(p)) for p, k in todo if k == "video")
         nospeech = sum(1 for p in targets)
         print(f"Роликов без речи: {nospeech}, из них с кадрами и ещё не сделано: {sum(1 for _, k in todo if k == 'video')} | "
-              f"кадров после удаления похожих: {nf} | примерно ${nf * 0.0012:.0f}–{nf * 0.0025:.0f} на Gemini", flush=True)
+              f"кадров к отправке: {nf} | модель {MODEL} | примерно ${nf * PRICE[0]:.0f}–{nf * PRICE[1]:.0f}", flush=True)
         return
     print(f"Роликов без речи с кадрами: {sum(1 for _, k in todo if k == 'video')}, каруселей: {sum(1 for _, k in todo if k == 'carousel')}, "
-          f"уже готово {len(done)} (модель {DEFAULT_MODEL})", flush=True)
+          f"уже готово {len(done)} (модель {MODEL})", flush=True)
 
     tik_lock = threading.Lock(); tik_last = [0.0]
     STOP = threading.Event()
@@ -135,13 +169,13 @@ def main():
             if not frames:
                 return {"post_id": pid, "kind": kind, "text": "", "error": "slides: нет картинок"}
         else:
-            frames = dedupe_frames(sorted((OUT / "frames" / pid).glob("*.jpg")))
+            frames = [small(f) for f in pick(pid)]
         texts, sch, promos, errs = [], [], [], 0
         for f in frames:
             if STOP.is_set():
                 return None
             try:
-                d = parse_json(ask_model(key, DEFAULT_BASE, DEFAULT_MODEL, f, prompt=prompt))
+                d = parse_json(ask_model(key, DEFAULT_BASE, MODEL, f, prompt=prompt))
             except Exception as exc:
                 if "402" in str(exc):
                     STOP.set(); return None
@@ -156,7 +190,7 @@ def main():
             p = (d.get("promo") or "").strip()
             if p and p not in promos:
                 promos.append(p)
-        rec = {"post_id": pid, "kind": kind, "model": DEFAULT_MODEL, "frames": len(frames), "text": "\n".join(texts)[:16000],
+        rec = {"post_id": pid, "kind": kind, "model": MODEL, "frames": len(frames), "text": "\n".join(texts)[:16000],
                "schools": sch, "promo": "; ".join(promos)}
         if frames and errs == len(frames):
             rec["error"] = "api"
