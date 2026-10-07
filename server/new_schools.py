@@ -436,6 +436,16 @@ def table(a):
                 r = json.loads(l); tr[str(r.get("post_id"))] = r
             except Exception:
                 pass
+    scr = {}
+    sf = NEW / "out" / "screen_text.jsonl"       # текст на экране роликов без речи (server_screen_ocr.py --out new/out)
+    if sf.exists():
+        for l in sf.read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(l)
+                if not r.get("error"):
+                    scr[str(r.get("post_id"))] = r
+            except Exception:
+                pass
     ncom = Counter()
     cl = NEW / "comments_out" / "comments_done.jsonl"
     if cl.exists():
@@ -448,10 +458,14 @@ def table(a):
     for r in load_rows():
         t = tr.get(r["post_id"]) or {}
         text = t.get("text") or t.get("transcript") or ""
-        hs = find_schools({"описание": r["description"], "речь": text})
+        sc = scr.get(r["post_id"]) or {}
+        hs = find_schools({"описание": r["description"], "речь": text, "экран": sc.get("text") or ""})
         r = dict(r, **{"Транскрипт (Whisper)": text, "Whisper статус": ("карусель" if r["post_type"] == "photo" else "нет данных" if not t else
                                          "речь" if text else "не скачалось" if t.get("error") else "без речи"),
-                       "Школы (описание + речь)": "; ".join(dict.fromkeys(h["school"] for h in hs if h["kind"] != "author")),
+                       "Текст на экране (Gemini)": sc.get("text") or "",
+                       "Школы на экране (Gemini)": "; ".join(sc.get("schools") or []),
+                       "Промо на экране": sc.get("promo") or "",
+                       "Школы (описание + речь + экран)": "; ".join(dict.fromkeys(h["school"] for h in hs if h["kind"] != "author")),
                        "Комментариев собрано": ncom.get(r["post_id"], "")})
         r.pop("images", None)
         out.append(r)
@@ -459,6 +473,7 @@ def table(a):
     df = pd.DataFrame(out)
     df.to_csv(NEW / TABLE_NAME, index=False, encoding="utf-8-sig")
     print(f"new/{TABLE_NAME}: {len(df)} постов, с расшифровкой {sum(1 for x in out if x['Транскрипт (Whisper)'])}, "
+          f"с текстом на экране {sum(1 for x in out if x['Текст на экране (Gemini)'])}, "
           f"с комментариями {sum(1 for x in out if x['Комментариев собрано'])}", flush=True)
 
 
