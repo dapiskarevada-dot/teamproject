@@ -13,8 +13,12 @@ if [[ " $* " == *" --dry-run "* || " $* " == *" --limit "* ]]; then
   python -u server_screen_ocr.py "${BASE[@]}" "$@"; exit
 fi
 ARGS=$(printf '%q ' "$@")
+# ждём только те new_schools.py, что идут СЕЙЧАС (по номерам процессов): иначе очередь находит саму себя —
+# в её же команде есть строка new_schools.py — и ждёт вечно
+WAIT=$(pgrep -f "^[^ ]*python[0-9.]* -u new_schools.py" | tr '\n' ' ')
+[ -n "$WAIT" ] && echo "Жду окончания new_schools.py (процессы: $WAIT)"
 nohup bash -c "
-  while pgrep -f '[n]ew_schools.py' >/dev/null; do sleep 60; done
+  for p in $WAIT; do while kill -0 \$p 2>/dev/null; do sleep 60; done; done
   echo \"старт текста с экрана: \$(date)\"
   python -u server_screen_ocr.py --out new/out --ids new/mac_posts.csv --carousels '' --workers 8 $ARGS
   python -u new_schools.py --mac-only --steps table,pack
