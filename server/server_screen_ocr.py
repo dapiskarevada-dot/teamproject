@@ -52,6 +52,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="только посчитать ролики и кадры, без запросов к Gemini")
     ap.add_argument("--model", default="", help="по умолчанию google/gemini-2.5-flash; дешевле в ~8 раз: google/gemini-2.5-flash-lite")
     ap.add_argument("--max-frames", type=int, default=0, help="не больше N кадров на ролик (после удаления похожих; 0 = все)")
+    ap.add_argument("--relevant", action="store_true",
+                    help="только посты, где в описании есть школа (по словарю) или слова про ЕГЭ/учёбу, либо описания нет совсем; "
+                         "отсекает мусор из лент авторов (ролики про GeForce, аниме и т.п.)")
     ap.add_argument("--resize", type=int, default=0, help="уменьшать кадры до N px по длинной стороне (меньше токенов; 0 = как есть)")
     a = ap.parse_args()
     global OUT
@@ -60,13 +63,25 @@ def main():
     if a.ids:
         csv.field_size_limit(10 ** 9)
         f = Path(a.ids) if Path(a.ids).is_absolute() else HERE / a.ids
-        views = {}
+        views, skipped = {}, 0
+        if a.relevant:
+            from school_match import find_schools
+            EDU = re.compile(r"егэ|огэ|экзам|репетит|подгот|поступ|вуз|пробник|выпускн|тгк|промокод|курс|вебинар|препод|балл|"
+                             r"учусь|учеб|учёб|школ|универ|сесси|абитур|куратор|сотк", re.I)
         for r in csv.DictReader(open(f, encoding="utf-8-sig")):
+            pid = (r.get("post_id") or "").strip()
+            if a.relevant:
+                d = (r.get("description") or "").strip()
+                if d and not EDU.search(d) and not [h for h in find_schools({"d": d}) if h["kind"] != "author"]:
+                    skipped += 1
+                    continue
             try:
-                views[(r.get("post_id") or "").strip()] = float(r.get("play_count") or 0)
+                views[pid] = float(r.get("play_count") or 0)
             except ValueError:
-                views[(r.get("post_id") or "").strip()] = 0
+                views[pid] = 0
         only = set(views)
+        if a.relevant:
+            print(f"--relevant: отброшено постов с описанием не про учёбу/школы: {skipped}, осталось {len(only)}", flush=True)
     from ocr_vlm import ask_model, parse_json, load_key, load_schools, DEFAULT_MODEL, DEFAULT_BASE
     MODEL = a.model or DEFAULT_MODEL
     lite = "lite" in MODEL
